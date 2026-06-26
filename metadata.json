@@ -1,0 +1,6 @@
+{
+  "name": "4Friends Margin",
+  "description": "Aplicatie inteligenta de calcul preturi de vanzare, scanare facturi cu inteligenta artificiala (Gemini) si monitorizare profitabilitate lunara.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
