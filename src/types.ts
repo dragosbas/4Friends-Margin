@@ -20,6 +20,8 @@ export interface FinalProduct {
   otherTaxesCost: number; // local taxes / other cost per unit (RON)
   customMarginPercent: number; // custom profit margin (e.g. 20%)
   customVatPercent: number; // e.g. 19% VAT for the sold product
+  calories?: number; // Total calories per product or portion
+  allergens?: string[]; // List of allergens
 }
 
 export interface SalePriceBreakdown {

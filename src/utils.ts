@@ -1,5 +1,21 @@
 import { RawMaterial, FinalProduct, SalePriceBreakdown, ScannedInvoiceItem } from "./types";
 
+export function getRecipeItemUnit(rmUnit: string): string {
+  if (!rmUnit) return "";
+  const unit = rmUnit.toLowerCase();
+  if (unit === "kg" || unit === "kilogram") return "g";
+  if (unit === "l" || unit === "litru" || unit === "l (litru)") return "ml";
+  return rmUnit;
+}
+
+export function getRecipeItemFactor(rmUnit: string): number {
+  if (!rmUnit) return 1;
+  const unit = rmUnit.toLowerCase();
+  if (unit === "kg" || unit === "kilogram") return 1000;
+  if (unit === "l" || unit === "litru" || unit === "l (litru)") return 1000;
+  return 1;
+}
+
 /**
  * Calculates the complete selling price breakdown for a final product.
  */
@@ -12,7 +28,8 @@ export function calculateSalePrice(
   product.recipeItems.forEach((item) => {
     const rawMaterial = rawMaterials.find((rm) => rm.id === item.rawMaterialId);
     if (rawMaterial) {
-      totalRawMaterialCost += item.quantityNeeded * rawMaterial.purchasePriceBeforeVat;
+      const factor = getRecipeItemFactor(rawMaterial.unit);
+      totalRawMaterialCost += (item.quantityNeeded / factor) * rawMaterial.purchasePriceBeforeVat;
     }
   });
 

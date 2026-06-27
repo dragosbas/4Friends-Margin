@@ -448,6 +448,84 @@ Asigură-te că mapezi absolut fiecare element trimis în listă.`;
   }
 });
 
+// 4b. Parse Recipe PDF Endpoint
+app.post("/api/parse-recipe-pdf", async (req, res) => {
+  try {
+    const { fileBase64 } = req.body;
+    if (!fileBase64) {
+      return res.status(400).json({ error: "Fisierul PDF lipseste (fileBase64 is required)" });
+    }
+
+    const cleanBase64 = fileBase64.replace(/^data:application\/pdf;base64,/, "");
+
+    const prompt = `Analizează această rețetă / fișă tehnică din documentul PDF încărcat și extrage toate datele structurate în format JSON.
+Asigură-te că:
+1. Identifici denumirea produsului finit (recipeName / productName). Formatul trebuie să fie exclusiv în MAJUSCULE și FĂRĂ DIACRITICE (ex: "TORT CIOCOLATA").
+2. Identifici sau estimezi numărul total de calorii (kcal) per porție sau per unitate de produs finit (calories). Dacă nu sunt menționate clar, estimează-le pe baza ingredientelor principale. Setează ca număr.
+3. Identifici lista de alergeni pe care îi conține produsul finit (allergens, ex: ["GLUTEN", "LACTOZA", "OUA", "ARAHIDE"]). Formatează-i în MAJUSCULE și FĂRĂ DIACRITICE.
+4. Extrage lista detaliată de ingrediente/materii prime (ingredients):
+   - Numele ingredientului (name) - formatat exclusiv în MAJUSCULE și FĂRĂ DIACRITICE (ex: "FAINA DE GRAU", "ZAHAR TOS", "LAPTE 3.5%").
+   - Cantitatea necesară (quantityNeeded) - exprimată strict numeric. IMPORTANT: deoarece în rețetă cantitățile sunt introduse în grame (g) și mililitri (ml), păstrează-le ca atare (ex: dacă rețeta cere 250g, pune 250; dacă cere 0.25kg, convertește-l în 250 grame!).
+   - Unitatea de măsură standardizată (unit) - folosește 'g' pentru solide/pulberi (grame), 'ml' pentru lichide (mililitri) și 'buc' pentru bucăți/ouă.
+   - Note adiționale (notes) - mențiuni sau instrucțiuni specifice despre ingredient.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: [
+        {
+          inlineData: {
+            mimeType: "application/pdf",
+            data: cleanBase64
+          }
+        },
+        { text: prompt }
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          description: "Datele structurate ale retetei extrase din PDF",
+          properties: {
+            productName: { type: Type.STRING, description: "Numele rețetei/produsului finit, în majuscule și fără diacritice" },
+            calories: { type: Type.NUMBER, description: "Numărul total de calorii (kcal), de preferat per porție sau produs" },
+            allergens: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Lista alergenilor detectați în majuscule și fără diacritice"
+            },
+            ingredients: {
+              type: Type.ARRAY,
+              description: "Ingredientele rețetei cu cantitățile convertite la unitățile standard (kg, l, buc)",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING, description: "Numele ingredientului curat, în majuscule și fără diacritice" },
+                  quantityNeeded: { type: Type.NUMBER, description: "Cantitatea necesară exprimată în grame, mililitri sau bucăți" },
+                  unit: { type: Type.STRING, description: "Unitatea standard de măsură ('g', 'ml', 'buc')" },
+                  notes: { type: Type.STRING, description: "Instrucțiuni sau detalii specifice" }
+                },
+                required: ["name", "quantityNeeded", "unit"]
+              }
+            }
+          },
+          required: ["productName", "ingredients"]
+        }
+      }
+    });
+
+    const text = response.text;
+    if (!text) {
+      throw new Error("Nu s-a putut obține un răspuns de la Gemini pentru rețeta PDF");
+    }
+
+    const recipeData = JSON.parse(text.trim());
+    return res.json({ success: true, recipe: recipeData });
+  } catch (error: any) {
+    console.error("Eroare la procesarea retetei PDF cu Gemini:", error);
+    return res.status(500).json({ error: error.message || "Eroare la analizarea rețetei PDF" });
+  }
+});
+
 // 5. ANAF SPV API Sync Endpoint
 app.post("/api/anaf/sync", (req, res) => {
   const { cif } = req.body;

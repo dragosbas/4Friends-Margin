@@ -28,7 +28,8 @@ import {
   Eye,
   CheckSquare,
   Database,
-  Search
+  Search,
+  GitMerge
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -48,7 +49,7 @@ import {
 
 import { RawMaterial, FinalProduct, SaleRecord, PriceAlert, ScannedInvoice, ScannedInvoiceItem, SalePriceBreakdown } from "./types";
 import { INITIAL_RAW_MATERIALS, INITIAL_PRODUCTS, INITIAL_SALES } from "./data";
-import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV, normalizeMaterialName, removeDiacritics } from "./utils";
+import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV, normalizeMaterialName, removeDiacritics, getRecipeItemUnit, getRecipeItemFactor } from "./utils";
 
 export default function App() {
   // --- STATE ---
@@ -134,6 +135,24 @@ export default function App() {
     { rawMaterialId: "", quantityNeeded: 0 }
   ]);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [newProdCalories, setNewProdCalories] = useState("");
+  const [newProdAllergens, setNewProdAllergens] = useState("");
+
+  // PDF Recipe Parsing states
+  const [isRecipeParsing, setIsRecipeParsing] = useState(false);
+  const [showRecipeImportModal, setShowRecipeImportModal] = useState(false);
+  const [parsedRecipe, setParsedRecipe] = useState<{
+    productName: string;
+    calories?: number;
+    allergens?: string[];
+    ingredients: {
+      name: string;
+      quantityNeeded: number;
+      unit: string;
+      notes?: string;
+    }[];
+  } | null>(null);
+  const [recipeIngredientMappings, setRecipeIngredientMappings] = useState<any[]>([]);
 
   // Sale registering state
   const [saleQuantity, setSaleQuantity] = useState("1");
@@ -150,6 +169,17 @@ export default function App() {
   const [showXmlInput, setShowXmlInput] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showRawMaterialModal, setShowRawMaterialModal] = useState(false);
+  const [showMergeModal, setShowMergeModal] = useState(false);
+  const [mergeSourceId, setMergeSourceId] = useState("");
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [ignoredDuplicates, setIgnoredDuplicates] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("ignored_duplicates");
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -162,6 +192,7 @@ export default function App() {
     onConfirm: () => {},
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recipeFileInputRef = useRef<HTMLInputElement>(null);
 
   // Filters
   const [filterMonth, setFilterMonth] = useState("All");
@@ -202,6 +233,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("price_alerts", JSON.stringify(alerts));
   }, [alerts]);
+
+  useEffect(() => {
+    localStorage.setItem("ignored_duplicates", JSON.stringify(ignoredDuplicates));
+  }, [ignoredDuplicates]);
 
   useEffect(() => {
     localStorage.setItem("anaf_connected", String(anafConnected));
@@ -377,6 +412,76 @@ export default function App() {
     });
   };
 
+  const handleMergeRawMaterials = () => {
+    if (!mergeSourceId || !mergeTargetId) {
+      triggerToast("Vă rugăm să selectați ambele materii prime.", "error");
+      return;
+    }
+
+    if (mergeSourceId === mergeTargetId) {
+      triggerToast("Materia primă sursă nu poate fi aceeași cu materia primă destinație.", "error");
+      return;
+    }
+
+    const sourceRm = rawMaterials.find(rm => rm.id === mergeSourceId);
+    const targetRm = rawMaterials.find(rm => rm.id === mergeTargetId);
+
+    if (!sourceRm || !targetRm) {
+      triggerToast("Materia primă selectată este invalidă.", "error");
+      return;
+    }
+
+    // Merge logic
+    // Update all product recipes using the source and replace them with target
+    const updatedProducts = products.map(p => {
+      const hasSource = p.recipeItems.some(item => item.rawMaterialId === mergeSourceId);
+      if (!hasSource) return p;
+
+      const newRecipeItems: { rawMaterialId: string; quantityNeeded: number }[] = [];
+      p.recipeItems.forEach(item => {
+        const idToUse = item.rawMaterialId === mergeSourceId ? mergeTargetId : item.rawMaterialId;
+        const existing = newRecipeItems.find(ni => ni.rawMaterialId === idToUse);
+        if (existing) {
+          existing.quantityNeeded += item.quantityNeeded;
+        } else {
+          newRecipeItems.push({
+            rawMaterialId: idToUse,
+            quantityNeeded: item.quantityNeeded
+          });
+        }
+      });
+
+      return {
+        ...p,
+        recipeItems: newRecipeItems
+      };
+    });
+
+    // Filter out the source raw material
+    const updatedRawMaterials = rawMaterials.filter(rm => rm.id !== mergeSourceId);
+
+    // Filter out alerts associated with the source
+    const updatedAlerts = alerts.filter(al => al.rawMaterialId !== mergeSourceId);
+
+    // Set state
+    setRawMaterials(updatedRawMaterials);
+    setProducts(updatedProducts);
+    setAlerts(updatedAlerts);
+
+    // Save to local storage
+    localStorage.setItem("raw_materials", JSON.stringify(updatedRawMaterials));
+    localStorage.setItem("final_products", JSON.stringify(updatedProducts));
+
+    triggerToast(
+      `Unificare finalizată cu succes! Toate rețetele care foloseau "${sourceRm.name}" au fost actualizate automat să folosească "${targetRm.name}" la prețul de ${formatRON(targetRm.purchasePriceBeforeVat)}.`
+    );
+
+    // Reset state & close modal
+    setMergeSourceId("");
+    setMergeTargetId("");
+    setShowMergeModal(false);
+  };
+
   // 2. Final Product management
   const handleAddRecipeRow = () => {
     setNewProdRecipe([...newProdRecipe, { rawMaterialId: "", quantityNeeded: 0 }]);
@@ -416,6 +521,10 @@ export default function App() {
     const taxes = parseFloat(newProdTaxes) || 0;
     const margin = parseFloat(newProdMargin) || 0;
     const vat = parseFloat(newProdVat) || 0;
+    const caloriesNum = newProdCalories ? parseInt(newProdCalories) : undefined;
+    const allergensArr = newProdAllergens
+      ? newProdAllergens.split(",").map(s => removeDiacritics(s).trim().toUpperCase()).filter(Boolean)
+      : [];
 
     if (editingProductId) {
       // Update
@@ -429,7 +538,9 @@ export default function App() {
                 logisticsCost: logistics,
                 otherTaxesCost: taxes,
                 customMarginPercent: margin,
-                customVatPercent: vat
+                customVatPercent: vat,
+                calories: caloriesNum,
+                allergens: allergensArr
               }
             : p
         )
@@ -445,7 +556,9 @@ export default function App() {
         logisticsCost: logistics,
         otherTaxesCost: taxes,
         customMarginPercent: margin,
-        customVatPercent: vat
+        customVatPercent: vat,
+        calories: caloriesNum,
+        allergens: allergensArr
       };
       setProducts(prev => [...prev, newProduct]);
       setSelectedProductId(newProduct.id);
@@ -459,6 +572,8 @@ export default function App() {
     setNewProdTaxes("0");
     setNewProdMargin("20");
     setNewProdVat("11");
+    setNewProdCalories("");
+    setNewProdAllergens("");
     setNewProdRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
   };
 
@@ -469,6 +584,8 @@ export default function App() {
     setNewProdTaxes(prod.otherTaxesCost.toString());
     setNewProdMargin(prod.customMarginPercent.toString());
     setNewProdVat(prod.customVatPercent.toString());
+    setNewProdCalories(prod.calories !== undefined ? prod.calories.toString() : "");
+    setNewProdAllergens(prod.allergens ? prod.allergens.join(", ") : "");
     setNewProdRecipe(prod.recipeItems.map(item => ({ ...item })));
     setShowProductForm(true);
   };
@@ -746,6 +863,166 @@ export default function App() {
     } catch (err: any) {
       triggerToast(err.message || "Eroare la procesarea textului XML", "error");
     }
+  };
+
+  // 3. Recipe PDF Parser event handlers
+  const handleRecipePdfSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      triggerToast("Vă rugăm să selectați un fișier PDF valid.", "error");
+      return;
+    }
+
+    setIsRecipeParsing(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = (err) => reject(err);
+      });
+
+      const response = await fetch("/api/parse-recipe-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileBase64: base64 })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || "Eroare la procesarea serverului.");
+      }
+
+      const data = await response.json();
+      if (data.success && data.recipe) {
+        const recipe = data.recipe;
+        setParsedRecipe(recipe);
+
+        // Auto-map ingredients
+        const initialMappings = recipe.ingredients.map((ing: any, idx: number) => {
+          const cleanIngName = normalizeMaterialName(ing.name);
+          const matchedRm = rawMaterials.find(
+            rm => normalizeMaterialName(rm.name) === cleanIngName || 
+                  normalizeMaterialName(rm.name).includes(cleanIngName) ||
+                  cleanIngName.includes(normalizeMaterialName(rm.name))
+          );
+
+          return {
+            index: idx,
+            name: ing.name,
+            quantityNeeded: ing.quantityNeeded,
+            unit: ing.unit || "kg",
+            notes: ing.notes || "",
+            matchType: matchedRm ? "existing" : "new",
+            existingMaterialId: matchedRm ? matchedRm.id : "",
+            newRmName: removeDiacritics(ing.name).trim().toUpperCase(),
+            newRmUnit: ing.unit || "kg",
+            newRmPrice: "0",
+            newRmVat: "11"
+          };
+        });
+
+        setRecipeIngredientMappings(initialMappings);
+        setShowRecipeImportModal(true);
+        triggerToast("Rețeta PDF a fost analizată cu succes de Gemini!");
+      } else {
+        throw new Error("Datele extrase din rețetă sunt nevalide.");
+      }
+    } catch (err: any) {
+      console.error("Error importing recipe PDF:", err);
+      triggerToast(`Eroare la citirea PDF-ului: ${err.message}`, "error");
+    } finally {
+      setIsRecipeParsing(false);
+      e.target.value = "";
+    }
+  };
+
+  const handleMappingRowChange = (index: number, field: string, value: any) => {
+    setRecipeIngredientMappings((prev) =>
+      prev.map((m, idx) => {
+        if (idx !== index) return m;
+        const updated = { ...m, [field]: value };
+        if (field === "matchType" && value === "new") {
+          updated.newRmName = removeDiacritics(m.name).trim().toUpperCase();
+        }
+        if (field === "existingMaterialId" && value) {
+          const rm = rawMaterials.find(r => r.id === value);
+          if (rm) {
+            updated.unit = rm.unit;
+          }
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleFinalizeRecipeImport = () => {
+    if (!parsedRecipe) return;
+
+    // Validate mappings
+    for (const mapping of recipeIngredientMappings) {
+      if (mapping.matchType === "existing" && !mapping.existingMaterialId) {
+        triggerToast(`Vă rugăm să alegeți o materie primă existentă pentru "${mapping.name}".`, "error");
+        return;
+      }
+      if (mapping.matchType === "new" && !mapping.newRmName.trim()) {
+        triggerToast(`Numele materiei prime noi pentru "${mapping.name}" nu poate fi gol.`, "error");
+        return;
+      }
+    }
+
+    // Create any new raw materials
+    let updatedRawMaterials = [...rawMaterials];
+    const mappingsWithFinalIds = recipeIngredientMappings.map((mapping) => {
+      if (mapping.matchType === "new") {
+        const newRmId = `rm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+        const newMaterial: RawMaterial = {
+          id: newRmId,
+          name: removeDiacritics(mapping.newRmName).trim().toUpperCase(),
+          unit: mapping.newRmUnit,
+          purchasePriceBeforeVat: parseFloat(mapping.newRmPrice) || 0,
+          vatPercent: parseFloat(mapping.newRmVat) || 11,
+          lastUpdated: new Date().toISOString()
+        };
+        updatedRawMaterials.push(newMaterial);
+        return { ...mapping, finalMaterialId: newRmId };
+      } else {
+        return { ...mapping, finalMaterialId: mapping.existingMaterialId };
+      }
+    });
+
+    // Save updated raw materials
+    setRawMaterials(updatedRawMaterials);
+    localStorage.setItem("raw_materials", JSON.stringify(updatedRawMaterials));
+
+    // Create the Final Product
+    const newProductId = `p-${Date.now()}`;
+    const recipeItems = mappingsWithFinalIds.map((m) => ({
+      rawMaterialId: m.finalMaterialId,
+      quantityNeeded: m.quantityNeeded
+    }));
+
+    const newProduct: FinalProduct = {
+      id: newProductId,
+      name: removeDiacritics(parsedRecipe.productName).trim().toUpperCase(),
+      recipeItems,
+      logisticsCost: 0,
+      otherTaxesCost: 0,
+      customMarginPercent: 20,
+      customVatPercent: 11,
+      calories: parsedRecipe.calories || undefined,
+      allergens: parsedRecipe.allergens || []
+    };
+
+    setProducts((prev) => [...prev, newProduct]);
+    setSelectedProductId(newProductId);
+    setShowRecipeImportModal(false);
+    setParsedRecipe(null);
+    setRecipeIngredientMappings([]);
+
+    triggerToast(`Rețeta "${newProduct.name}" a fost importată cu succes!`);
   };
 
   // --- CAMERA SCANNING (GEMINI SERVER-SIDE API) ---
@@ -1299,18 +1576,75 @@ export default function App() {
 
   const periodStats = calculatePeriodStats();
 
-  const sortedAndFilteredRawMaterials = [...rawMaterials]
-    .sort((a, b) => a.name.localeCompare(b.name, "ro"))
-    .filter(rm => {
-      const query = removeDiacritics(searchRmQuery).trim().toUpperCase();
-      if (query && !rm.name.includes(query)) {
-        return false;
-      }
-      if (selectedRmLetter !== "ALL") {
-        return rm.name.startsWith(selectedRmLetter);
-      }
-      return true;
+  const possibleDuplicates = React.useMemo(() => {
+    const duplicates: { rm1: RawMaterial; rm2: RawMaterial; confidence: "high" | "medium" }[] = [];
+    const processed = new Set<string>();
+
+    // Pre-calculate lowercased names without diacritics and their words for extreme performance speedup
+    const prepared = rawMaterials.map(rm => {
+      const nameNorm = removeDiacritics(rm.name).toLowerCase();
+      const words = nameNorm.split(/[^a-z0-9]+/i).filter(w => w.length >= 3);
+      return { rm, nameNorm, words };
     });
+
+    for (let i = 0; i < prepared.length; i++) {
+      for (let j = i + 1; j < prepared.length; j++) {
+        const p1 = prepared[i];
+        const p2 = prepared[j];
+
+        const key = [p1.rm.id, p2.rm.id].sort().join("-");
+        if (ignoredDuplicates.includes(key)) continue;
+
+        if (p1.words.length === 0 || p2.words.length === 0) continue;
+
+        const intersection = p1.words.filter(w => p2.words.includes(w));
+        const unionSize = new Set([...p1.words, ...p2.words]).size;
+        const jaccard = intersection.length / unionSize;
+
+        const isSubstring = p1.nameNorm.includes(p2.nameNorm) || p2.nameNorm.includes(p1.nameNorm);
+
+        // Avoid false positives like "Murber Barbeque" and "Murber BO-R" where intersection is only 1 word ("murber")
+        // and they are not substrings of each other, or if they are substrings but the shorter name has only 1 word and the longer name has other completely different words.
+        if (intersection.length === 1) {
+          const isOneWordExact = p1.words.length === 1 || p2.words.length === 1;
+          if (!isSubstring || !isOneWordExact) {
+            continue; 
+          }
+        }
+
+        if (jaccard >= 0.4 || isSubstring) {
+          const confidence = (jaccard >= 0.65 || (isSubstring && Math.abs(p1.words.length - p2.words.length) <= 1)) ? "high" : "medium";
+          if (!processed.has(key)) {
+            processed.add(key);
+            duplicates.push({ rm1: p1.rm, rm2: p2.rm, confidence });
+          }
+        }
+      }
+    }
+    return duplicates;
+  }, [rawMaterials, ignoredDuplicates]);
+
+  const normalizedSearchQuery = React.useMemo(() => {
+    return removeDiacritics(searchRmQuery).trim().toUpperCase();
+  }, [searchRmQuery]);
+
+  const sortedAndFilteredRawMaterials = React.useMemo(() => {
+    return [...rawMaterials]
+      .sort((a, b) => a.name.localeCompare(b.name, "ro"))
+      .filter(rm => {
+        if (normalizedSearchQuery) {
+          const normalizedRmName = removeDiacritics(rm.name).toUpperCase();
+          if (!normalizedRmName.includes(normalizedSearchQuery)) {
+            return false;
+          }
+        }
+        if (selectedRmLetter !== "ALL") {
+          const firstChar = removeDiacritics(rm.name).charAt(0).toUpperCase();
+          return firstChar === selectedRmLetter;
+        }
+        return true;
+      });
+  }, [rawMaterials, normalizedSearchQuery, selectedRmLetter]);
 
   // Recharts Monthly Evolution Data
   const getMonthlyChartData = () => {
@@ -1495,6 +1829,446 @@ export default function App() {
                 className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-amber-100 transition-all cursor-pointer"
               >
                 Confirmă
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loading overlay pentru analiză rețetă PDF */}
+      {isRecipeParsing && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex flex-col items-center justify-center z-[100] p-4 animate-fade-in no-print">
+          <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center shadow-2xl border border-slate-100 flex flex-col items-center">
+            <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-4 animate-bounce">
+              <Sparkles className="w-8 h-8 text-indigo-600 animate-pulse" />
+            </div>
+            <h3 className="text-lg font-extrabold text-slate-900 mb-1">Se analizează rețeta...</h3>
+            <p className="text-xs text-slate-500 mb-6 font-medium leading-relaxed">
+              Gemini citește fișierul PDF, extrage numărul de calorii, alergenii și convertește automat ingredientele în unități de măsură standardizate (kg/litri).
+            </p>
+            <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-100 rounded-full text-[11px] font-bold text-slate-600">
+              <RefreshCw className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
+              <span>Se procesează documentul PDF cu Gemini AI</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Import Rețetă PDF & Mapping */}
+      {showRecipeImportModal && parsedRecipe && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 no-print overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-200 flex flex-col my-8 max-h-[90vh]">
+            <div className="flex items-center justify-between mb-4 shrink-0 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3 text-indigo-600">
+                <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center shrink-0">
+                  <FileText className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Asistent Import Rețetă PDF (Gemini AI)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Mapează ingredientele extrase și salvează rețeta finită.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecipeImportModal(false);
+                  setParsedRecipe(null);
+                  setRecipeIngredientMappings([]);
+                }}
+                className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content area scrollable */}
+            <div className="space-y-5 overflow-y-auto pr-1 py-1 flex-1">
+              
+              {/* Product Basic Info Row */}
+              <div className="bg-indigo-50/50 rounded-xl p-4 border border-indigo-100/60 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-1">
+                  <label className="block text-[10px] font-extrabold text-indigo-950 uppercase mb-1">Nume Produs Finit</label>
+                  <input
+                    type="text"
+                    value={parsedRecipe.productName}
+                    onChange={(e) => setParsedRecipe({ ...parsedRecipe, productName: e.target.value })}
+                    className="w-full bg-white border border-indigo-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-indigo-950 focus:outline-indigo-600"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-extrabold text-indigo-950 uppercase mb-1">⚡ Calorii (kcal)</label>
+                  <input
+                    type="number"
+                    value={parsedRecipe.calories || ""}
+                    onChange={(e) => setParsedRecipe({ ...parsedRecipe, calories: parseInt(e.target.value) || undefined })}
+                    placeholder="Ex: 350"
+                    className="w-full bg-white border border-indigo-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-indigo-600"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-extrabold text-indigo-950 uppercase mb-1">Alergeni (separați prin virgulă)</label>
+                  <input
+                    type="text"
+                    value={parsedRecipe.allergens ? parsedRecipe.allergens.join(", ") : ""}
+                    onChange={(e) => setParsedRecipe({ 
+                      ...parsedRecipe, 
+                      allergens: e.target.value.split(",").map(s => s.trim().toUpperCase()).filter(Boolean)
+                    })}
+                    placeholder="Ex: Gluten, Lactoza, Oua"
+                    className="w-full bg-white border border-indigo-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-indigo-600"
+                  />
+                </div>
+              </div>
+
+              {/* Ingredients Mapping Header */}
+              <div>
+                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-1">
+                  Mapează Ingredientele Detectate ({recipeIngredientMappings.length})
+                </h4>
+                <p className="text-[11px] text-slate-500 font-medium">
+                  Asociați fiecare ingredient extras din PDF cu o materie primă existentă din catalog sau creați una nouă pe loc.
+                </p>
+              </div>
+
+              {/* Mapping Rows */}
+              <div className="space-y-3.5">
+                {recipeIngredientMappings.map((mapping, idx) => (
+                  <div key={idx} className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/80 hover:border-slate-300 transition-colors">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-2.5 pb-2 border-b border-slate-200/40">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-slate-800 uppercase flex items-center gap-1.5">
+                          📌 {mapping.name}
+                          {mapping.notes && (
+                            <span className="text-[10px] font-normal text-slate-500 italic lowercase bg-slate-100 px-1.5 py-0.5 rounded">
+                              ({mapping.notes})
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px] font-bold text-indigo-600 mt-0.5">
+                          Cantitate necesară estimată: {mapping.quantityNeeded} {mapping.unit}
+                        </span>
+                      </div>
+
+                      {/* Mapping option selector */}
+                      <div className="w-full sm:w-64">
+                        <select
+                          value={mapping.matchType === "existing" ? mapping.existingMaterialId : "new"}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === "new") {
+                              handleMappingRowChange(idx, "matchType", "new");
+                              handleMappingRowChange(idx, "existingMaterialId", "");
+                            } else {
+                              handleMappingRowChange(idx, "matchType", "existing");
+                              handleMappingRowChange(idx, "existingMaterialId", val);
+                            }
+                          }}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-semibold focus:outline-indigo-600"
+                        >
+                          <option value="new">🆕 Creează materie primă nouă...</option>
+                          <option disabled>── Materii prime existente ──</option>
+                          {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
+                            <option key={rm.id} value={rm.id}>
+                              {rm.name} ({rm.unit})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Inline parameters for NEW material */}
+                    {mapping.matchType === "new" && (
+                      <div className="bg-white/80 p-2.5 rounded-lg border border-slate-200/60 grid grid-cols-1 sm:grid-cols-3 gap-2.5 animate-fade-in">
+                        <div>
+                          <label className="block text-[9px] font-extrabold text-slate-600 uppercase mb-0.5">Denumire în Catalog</label>
+                          <input
+                            type="text"
+                            value={mapping.newRmName}
+                            onChange={(e) => handleMappingRowChange(idx, "newRmName", e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px] font-bold text-slate-800 uppercase focus:outline-indigo-600"
+                            required
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-extrabold text-slate-600 uppercase mb-0.5">U.M. standard</label>
+                          <select
+                            value={mapping.newRmUnit}
+                            onChange={(e) => {
+                              handleMappingRowChange(idx, "newRmUnit", e.target.value);
+                              handleMappingRowChange(idx, "unit", e.target.value);
+                            }}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-md p-1 text-[11px] font-semibold focus:outline-indigo-600"
+                          >
+                            <option value="kg">kg</option>
+                            <option value="l">l (litru)</option>
+                            <option value="buc">buc (bucată)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-extrabold text-slate-600 uppercase mb-0.5">Preț Achiziție / U.M. (Fără TVA)</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={mapping.newRmPrice}
+                              onChange={(e) => handleMappingRowChange(idx, "newRmPrice", e.target.value)}
+                              placeholder="0.00"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 pr-8 text-[11px] font-mono text-right font-bold text-slate-700 focus:outline-indigo-600"
+                              required
+                            />
+                            <div className="absolute right-2 top-1 text-[10px] text-slate-400 font-extrabold">RON</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer with action buttons */}
+            <div className="mt-5 pt-3 border-t border-slate-100 flex justify-end gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecipeImportModal(false);
+                  setParsedRecipe(null);
+                  setRecipeIngredientMappings([]);
+                }}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-4 py-2 rounded-xl transition-all cursor-pointer"
+              >
+                Abandonează
+              </button>
+              <button
+                type="button"
+                onClick={handleFinalizeRecipeImport}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2 rounded-xl shadow-lg shadow-indigo-100 transition-all cursor-pointer flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98] duration-150"
+              >
+                <Check className="w-4 h-4" />
+                <span>Creează Rețetă & Catalog</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Unificare / Deduplicare Materii Prime */}
+      {showMergeModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-200 flex flex-col">
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-3 text-indigo-600">
+                <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center shrink-0">
+                  <GitMerge className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Unificare Materii Prime (Deduplicare)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Mutați rețetele de pe un ingredient duplicat pe cel corect.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMergeModal(false);
+                  setMergeSourceId("");
+                  setMergeTargetId("");
+                }}
+                className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-indigo-50/50 rounded-xl p-3.5 border border-indigo-100/60">
+                <p className="text-xs text-indigo-950 font-medium leading-relaxed">
+                  💡 <strong>Cum funcționează?</strong> Dacă aveți ingrediente introduse greșit sau sub mai multe denumiri (de ex: <em>"PIEPT PUI"</em>, <em>"PIEPT DE PUI DEZOSAT"</em>), le puteți unifica aici:
+                </p>
+                <ul className="text-[11px] text-indigo-950/80 list-disc list-inside mt-2 space-y-1">
+                  <li>Toate produsele/rețetele care folosesc ingredientul duplicat vor fi actualizate automat să folosească ingredientul corect.</li>
+                  <li>Cantitățile din rețete vor fi calculate corect în funcție de noua materie primă.</li>
+                  <li>Ingredientul duplicat va fi șters automat din catalog pentru a nu mai crea confuzie.</li>
+                </ul>
+              </div>
+
+              {/* Sugestii inteligente de unificare rapidă */}
+              {(() => {
+                const duplicates = possibleDuplicates;
+                if (duplicates.length === 0) return null;
+                return (
+                  <div className="border border-amber-200 bg-amber-50/50 rounded-xl p-3">
+                    <span className="block text-[10px] font-extrabold text-amber-800 uppercase mb-2">
+                      ⭐ Sugestii de unificare rapidă (Apasă pe una):
+                    </span>
+                    <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1">
+                      {duplicates.map((pair, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => {
+                            // Pre-fill the duplicate pair
+                            setMergeSourceId(pair.rm1.id);
+                            setMergeTargetId(pair.rm2.id);
+                          }}
+                          className={`border p-2 rounded-lg flex items-center justify-between text-xs cursor-pointer transition-colors ${
+                            mergeSourceId === pair.rm1.id && mergeTargetId === pair.rm2.id
+                              ? "bg-amber-100 border-amber-300 shadow-sm"
+                              : "bg-white hover:bg-amber-100 border-amber-100"
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 pr-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-slate-800 truncate block max-w-[140px] sm:max-w-[170px]">{pair.rm1.name}</span>
+                              <span className="text-slate-400 font-extrabold text-[10px]">→</span>
+                              <span className="font-bold text-indigo-700 truncate block max-w-[140px] sm:max-w-[170px]">{pair.rm2.name}</span>
+                            </div>
+                            <span className="text-[9px] text-slate-500 font-semibold block mt-0.5">
+                              Prețuri: {formatRON(pair.rm1.purchasePriceBeforeVat)} vs {formatRON(pair.rm2.purchasePriceBeforeVat)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[9px] bg-indigo-50 text-indigo-700 font-extrabold px-1.5 py-0.5 rounded-md hover:bg-indigo-100 transition-colors">
+                              Alege
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const pairKey = [pair.rm1.id, pair.rm2.id].sort().join("-");
+                                setIgnoredDuplicates(prev => [...prev, pairKey]);
+                                triggerToast(`Am marcat produsele ca fiind diferite.`);
+                              }}
+                              className="text-[9px] bg-rose-50 text-rose-700 border border-rose-100 font-extrabold px-1.5 py-0.5 rounded-md hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
+                              title="Sunt produse diferite, nu duplicate"
+                            >
+                              Sunt diferite
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Source ingredient dropdown */}
+              <div>
+                <label className="block text-[10px] font-extrabold text-slate-700 uppercase mb-1">
+                  1. Alege ingredientul duplicat / incorect (Care va fi ȘTERS):
+                </label>
+                <select
+                  value={mergeSourceId}
+                  onChange={(e) => {
+                    setMergeSourceId(e.target.value);
+                    if (e.target.value === mergeTargetId) {
+                      setMergeTargetId("");
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-semibold focus:outline-indigo-600"
+                >
+                  <option value="">Alege ingredientul pe care vrei să îl elimini...</option>
+                  {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
+                    <option key={rm.id} value={rm.id}>
+                      {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Swap Button */}
+              {mergeSourceId && mergeTargetId && (
+                <div className="flex justify-center -my-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const temp = mergeSourceId;
+                      setMergeSourceId(mergeTargetId);
+                      setMergeTargetId(temp);
+                    }}
+                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[10px] font-extrabold px-3 py-1 rounded-full border border-indigo-100 flex items-center gap-1 shadow-xs transition-all cursor-pointer active:scale-95 hover:scale-[1.02]"
+                    title="Inversează direcția de unificare"
+                  >
+                    🔄 Inversează direcția (Păstrează celălalt)
+                  </button>
+                </div>
+              )}
+
+              {/* Target ingredient dropdown */}
+              <div>
+                <label className="block text-[10px] font-extrabold text-slate-700 uppercase mb-1">
+                  2. Alege ingredientul principal / corect (Pe care îl PĂSTREZI):
+                </label>
+                <select
+                  value={mergeTargetId}
+                  onChange={(e) => setMergeTargetId(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-semibold focus:outline-indigo-600"
+                  disabled={!mergeSourceId}
+                >
+                  <option value="">Alege ingredientul corect cu prețul bun...</option>
+                  {[...rawMaterials]
+                    .filter((rm) => rm.id !== mergeSourceId)
+                    .sort((a, b) => a.name.localeCompare(b.name, "ro"))
+                    .map((rm) => (
+                      <option key={rm.id} value={rm.id}>
+                        {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Diagnostic Info Section */}
+              {mergeSourceId && (
+                <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 text-xs text-slate-600 space-y-2">
+                  <div className="flex justify-between font-medium">
+                    <span>Rețete active afectate:</span>
+                    <span className="font-bold text-indigo-700">
+                      {products.filter((p) => p.recipeItems.some((item) => item.rawMaterialId === mergeSourceId)).length} rețete
+                    </span>
+                  </div>
+                  {mergeTargetId && (
+                    <>
+                      <div className="flex justify-between font-medium border-t border-slate-200/60 pt-1.5">
+                        <span>Preț vechi (duplicat):</span>
+                        <span className="font-mono text-slate-500">
+                          {formatRON(rawMaterials.find((r) => r.id === mergeSourceId)?.purchasePriceBeforeVat || 0)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between font-medium">
+                        <span>Preț nou (corect):</span>
+                        <span className="font-mono font-bold text-emerald-600">
+                          {formatRON(rawMaterials.find((r) => r.id === mergeTargetId)?.purchasePriceBeforeVat || 0)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 pt-3 border-t border-slate-100 flex justify-end gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMergeModal(false);
+                  setMergeSourceId("");
+                  setMergeTargetId("");
+                }}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-4 py-2 rounded-xl transition-all cursor-pointer"
+              >
+                Anulează
+              </button>
+              <button
+                type="button"
+                onClick={handleMergeRawMaterials}
+                disabled={!mergeSourceId || !mergeTargetId}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:pointer-events-none text-white text-xs font-bold px-5 py-2 rounded-xl shadow-lg shadow-indigo-100 transition-all cursor-pointer flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98] duration-150"
+              >
+                <Check className="w-4 h-4" />
+                <span>Unifică Ingredientele</span>
               </button>
             </div>
           </div>
@@ -1894,6 +2668,13 @@ export default function App() {
                   <p className="text-[11px] text-slate-500 font-medium">Selectați un produs pentru a-i vedea formula</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    ref={recipeFileInputRef}
+                    onChange={handleRecipePdfSelected}
+                    accept=".pdf"
+                    className="hidden"
+                  />
                   <button
                     onClick={() => {
                       setEditingRmId(null);
@@ -1907,6 +2688,19 @@ export default function App() {
                     title="Adaugă materie primă sau ingredient nou în catalog"
                   >
                     <Plus className="w-3.5 h-3.5" /> Materie Primă
+                  </button>
+                  <button
+                    onClick={() => recipeFileInputRef.current?.click()}
+                    disabled={isRecipeParsing}
+                    className="bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-700 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 border border-indigo-200 transition-all cursor-pointer whitespace-nowrap active:scale-95 duration-100 disabled:opacity-50"
+                    title="Încarcă rețetă din fișier PDF folosind AI (Gemini)"
+                  >
+                    {isRecipeParsing ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5" />
+                    )}
+                    <span>Importă Rețetă</span>
                   </button>
                   <button
                     onClick={() => {
@@ -1988,40 +2782,52 @@ export default function App() {
                       </div>
 
                       <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                        {newProdRecipe.map((recipeItem, index) => (
-                          <div key={index} className="flex items-center gap-1.5">
-                            <select
-                              value={recipeItem.rawMaterialId}
-                              onChange={(e) => handleRecipeRowChange(index, "rawMaterialId", e.target.value)}
-                              className="flex-1 bg-slate-50 border border-slate-200 rounded-md p-1 text-[11px] font-medium focus:outline-indigo-600"
-                              required
-                            >
-                              <option value="">Alege ingredient...</option>
-                              {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
-                                <option key={rm.id} value={rm.id}>
-                                  {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
-                                </option>
-                              ))}
-                            </select>
-                            <input
-                              type="number"
-                              step="any"
-                              value={recipeItem.quantityNeeded || ""}
-                              onChange={(e) => handleRecipeRowChange(index, "quantityNeeded", e.target.value)}
-                              placeholder="Cant."
-                              className="w-16 bg-slate-50 border border-slate-200 rounded-md p-1 text-[11px] font-mono text-right focus:outline-indigo-600"
-                              required
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveRecipeRow(index)}
-                              className="text-rose-500 hover:text-rose-700 p-1"
-                              disabled={newProdRecipe.length === 1}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
+                        {newProdRecipe.map((recipeItem, index) => {
+                          const selectedRm = rawMaterials.find((rm) => rm.id === recipeItem.rawMaterialId);
+                          const unitLabel = selectedRm ? getRecipeItemUnit(selectedRm.unit) : "";
+                          
+                          return (
+                            <div key={index} className="flex items-center gap-1.5">
+                              <select
+                                value={recipeItem.rawMaterialId}
+                                onChange={(e) => handleRecipeRowChange(index, "rawMaterialId", e.target.value)}
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded-md p-1 text-[11px] font-medium focus:outline-indigo-600"
+                                required
+                              >
+                                <option value="">Alege ingredient...</option>
+                                {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
+                                  <option key={rm.id} value={rm.id}>
+                                    {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
+                                  </option>
+                                ))}
+                              </select>
+                              <div className="relative flex items-center shrink-0">
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={recipeItem.quantityNeeded || ""}
+                                  onChange={(e) => handleRecipeRowChange(index, "quantityNeeded", e.target.value)}
+                                  placeholder="Cant."
+                                  className="w-24 bg-slate-50 border border-slate-200 rounded-md py-1 pl-1.5 pr-7 text-[11px] font-mono text-right focus:outline-indigo-600"
+                                  required
+                                />
+                                {unitLabel && (
+                                  <span className="absolute right-1.5 text-[9px] font-extrabold text-indigo-600 bg-indigo-50/80 px-1 py-0.5 rounded pointer-events-none uppercase">
+                                    {unitLabel}
+                                  </span>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveRecipeRow(index)}
+                                className="text-rose-500 hover:text-rose-700 p-1 shrink-0"
+                                disabled={newProdRecipe.length === 1}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -2078,6 +2884,33 @@ export default function App() {
                           <option value="11">11% (Alimente / Platouri)</option>
                           <option value="21">21% (Non-alimente / Altele)</option>
                         </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center gap-1">
+                          ⚡ Calorii (kcal)
+                        </label>
+                        <input
+                          type="number"
+                          placeholder="Ex: 350"
+                          value={newProdCalories}
+                          onChange={(e) => setNewProdCalories(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-mono text-right focus:outline-indigo-600"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                          Alergeni (separați prin virgulă)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Ex: Gluten, Lactoza, Oua"
+                          value={newProdAllergens}
+                          onChange={(e) => setNewProdAllergens(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs focus:outline-indigo-600"
+                        />
                       </div>
                     </div>
 
@@ -2182,6 +3015,25 @@ export default function App() {
                           Calcul Preț de Vânzare
                         </span>
                         <h2 className="font-extrabold text-slate-900 text-lg mt-1">{activeProduct.name}</h2>
+                        {(activeProduct.calories !== undefined || (activeProduct.allergens && activeProduct.allergens.length > 0)) && (
+                          <div className="flex flex-wrap items-center gap-2 mt-2">
+                            {activeProduct.calories !== undefined && (
+                              <span className="bg-amber-50 text-amber-700 border border-amber-100 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1">
+                                ⚡ {activeProduct.calories} kcal
+                              </span>
+                            )}
+                            {activeProduct.allergens && activeProduct.allergens.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span className="text-[10px] font-bold text-slate-400 mr-1 uppercase">Alergeni:</span>
+                                {activeProduct.allergens.map((alg) => (
+                                  <span key={alg} className="bg-rose-50 text-rose-700 border border-rose-100 text-[9px] font-extrabold px-1.5 py-0.5 rounded-md uppercase">
+                                    {alg}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                       
                       {/* Quick sale button */}
@@ -2345,7 +3197,8 @@ export default function App() {
                           {activeProduct.recipeItems.map((item, index) => {
                             const rm = rawMaterials.find((r) => r.id === item.rawMaterialId);
                             if (!rm) return null;
-                            const totalCost = item.quantityNeeded * rm.purchasePriceBeforeVat;
+                            const factor = getRecipeItemFactor(rm.unit);
+                            const totalCost = (item.quantityNeeded / factor) * rm.purchasePriceBeforeVat;
 
                             return (
                               <tr key={index} className="hover:bg-slate-50/50">
@@ -2354,7 +3207,7 @@ export default function App() {
                                   {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
                                 </td>
                                 <td className="p-2.5 font-mono text-right text-slate-900 font-medium">
-                                  {item.quantityNeeded} {rm.unit}
+                                  {item.quantityNeeded} {getRecipeItemUnit(rm.unit)}
                                 </td>
                                 <td className="p-2.5 font-mono text-right font-semibold text-slate-900">
                                   {formatRON(totalCost)}
@@ -2403,14 +3256,85 @@ export default function App() {
         {/* TAB 2: INVENTORY, CAMERA INVOICE SCANNING, SPV XML & ALERTS */}
         {/* ========================================================= */}
         {activeTab === "inventory" && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 no-print">
+          <div className="space-y-6">
+            
+            {/* Propuneri inteligente de unificare (Deduplicare automată) */}
+            {(() => {
+              const duplicates = possibleDuplicates;
+              if (duplicates.length === 0) return null;
+              return (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4.5 shadow-xs animate-fade-in flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center shrink-0 text-amber-600">
+                      <Sparkles className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-amber-900 text-xs sm:text-sm flex items-center gap-1.5 uppercase">
+                        🔍 Detectare automată duplicate ({duplicates.length})
+                      </h4>
+                      <p className="text-[11px] text-amber-800 font-semibold mt-1 leading-relaxed">
+                        Am găsit ingrediente similare care par să fie duplicate în catalog (ex: <em className="underline font-bold text-amber-950">{duplicates[0].rm1.name}</em> și <em className="underline font-bold text-amber-950">{duplicates[0].rm2.name}</em>). Unifică-le pentru a avea un calcul corect al costurilor!
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pair = duplicates[0];
+                        setMergeSourceId(pair.rm1.id);
+                        setMergeTargetId(pair.rm2.id);
+                        setShowMergeModal(true);
+                      }}
+                      className="bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-extrabold px-3 py-2 rounded-lg shadow-sm transition-all cursor-pointer whitespace-nowrap active:scale-95"
+                    >
+                      Unifică-le acum
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pair = duplicates[0];
+                        const pairKey = [pair.rm1.id, pair.rm2.id].sort().join("-");
+                        setIgnoredDuplicates(prev => [...prev, pairKey]);
+                        triggerToast(`Am marcat "${pair.rm1.name}" și "${pair.rm2.name}" ca fiind produse diferite.`);
+                      }}
+                      className="bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-extrabold px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap active:scale-95"
+                    >
+                      Sunt diferite (Ignoră)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMergeModal(true);
+                      }}
+                      className="bg-white hover:bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-extrabold px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap active:scale-95"
+                    >
+                      Vezi toate duplicatele
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 no-print">
             
             {/* Raw materials inventory list (col-span-5) */}
             <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
               
-              <div className="p-4 bg-slate-50 border-b border-slate-100">
-                <h3 className="font-bold text-slate-900 text-sm">Catalog Materii Prime</h3>
-                <p className="text-[11px] text-slate-500 font-medium">Prețurile curente stabilite în rețete</p>
+              <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">Catalog Materii Prime</h3>
+                  <p className="text-[11px] text-slate-500 font-medium">Prețurile curente stabilite în rețete</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMergeModal(true)}
+                  className="bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-700 text-[10px] font-extrabold px-2.5 py-1.5 rounded-lg border border-indigo-100 flex items-center gap-1 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                  title="Unifică materiale scrise sub diferite denumiri într-unul singur"
+                >
+                  <GitMerge className="w-3.5 h-3.5" />
+                  <span>Unifică duplicate</span>
+                </button>
               </div>
 
               {/* Add / Edit Raw Material Form */}
@@ -2572,14 +3496,27 @@ export default function App() {
                             {formatRON(rm.purchasePriceBeforeVat * (1 + rm.vatPercent / 100))} cu TVA
                           </span>
                         </div>
-                        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                        <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-1">
                           <button
+                            type="button"
+                            onClick={() => {
+                              setMergeSourceId(rm.id);
+                              setShowMergeModal(true);
+                            }}
+                            className="p-1 hover:bg-slate-100 rounded-md text-indigo-600"
+                            title="Unifică sau deduplicează acest ingredient"
+                          >
+                            <GitMerge className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => handleEditRm(rm)}
                             className="p-1 hover:bg-slate-100 rounded-md text-slate-600"
                           >
                             <Edit className="w-3.5 h-3.5" />
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleDeleteRm(rm.id, rm.name)}
                             className="p-1 hover:bg-slate-100 rounded-md text-rose-500"
                           >
@@ -3260,7 +4197,9 @@ export default function App() {
             </div>
 
           </div>
-        )}
+
+        </div>
+      )}
 
         {/* ========================================================= */}
         {/* TAB 3: MONTHLY REPORTS, RECHARTS VISUALIZATION & PDF/CSV */}
