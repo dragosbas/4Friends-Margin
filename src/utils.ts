@@ -16,6 +16,17 @@ export function getRecipeItemFactor(rmUnit: string): number {
   return 1;
 }
 
+export function getDefaultMargin(rawMaterialCost: number): number {
+  if (rawMaterialCost < 2.5) return 40;
+  if (rawMaterialCost <= 3.99) return 37;
+  if (rawMaterialCost <= 6.5) return 34;
+  if (rawMaterialCost <= 8.5) return 30;
+  if (rawMaterialCost <= 9.99) return 27;
+  if (rawMaterialCost <= 12.5) return 25;
+  if (rawMaterialCost <= 19.99) return 22;
+  return 20;
+}
+
 /**
  * Calculates the complete selling price breakdown for a final product.
  */
@@ -33,11 +44,15 @@ export function calculateSalePrice(
     }
   });
 
-  const logisticsCost = product.logisticsCost || 0;
-  const otherTaxes = product.otherTaxesCost || 0;
+  const logisticsCost = product.logisticsCost !== undefined ? product.logisticsCost : 1.0;
+  const otherTaxes = product.otherTaxesCost !== undefined ? product.otherTaxesCost : 1.0;
   const productionCost = totalRawMaterialCost + logisticsCost + otherTaxes;
 
-  const profitMarginAmount = productionCost * (product.customMarginPercent / 100);
+  const marginPercent = (product.useVariableMargin !== false)
+    ? getDefaultMargin(totalRawMaterialCost)
+    : (product.customMarginPercent !== undefined ? product.customMarginPercent : 20);
+
+  const profitMarginAmount = productionCost * (marginPercent / 100);
   const salePriceBeforeVat = productionCost + profitMarginAmount;
   const vatAmount = salePriceBeforeVat * (product.customVatPercent / 100);
   const finalSalePriceWithVat = salePriceBeforeVat + vatAmount;
@@ -51,6 +66,7 @@ export function calculateSalePrice(
     salePriceBeforeVat: Number(salePriceBeforeVat.toFixed(2)),
     vatAmount: Number(vatAmount.toFixed(2)),
     finalSalePriceWithVat: Number(finalSalePriceWithVat.toFixed(2)),
+    appliedMarginPercent: marginPercent,
   };
 }
 

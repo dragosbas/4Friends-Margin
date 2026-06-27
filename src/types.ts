@@ -3,8 +3,12 @@ export interface RawMaterial {
   name: string;
   unit: string; // kg, l, buc, etc.
   purchasePriceBeforeVat: number; // base purchase cost per unit
-  vatPercent: number; // e.g. 19, 9, 5
+  vatPercent: number; // e.g. 11% or 21% under July 2025 RO fiscal rules
   lastUpdated: string; // ISO String
+  isPackaged?: boolean;
+  packagePrice?: number;
+  packageSize?: number;
+  packageUnit?: string;
 }
 
 export interface RecipeItem {
@@ -19,9 +23,10 @@ export interface FinalProduct {
   logisticsCost: number; // fixed transport/packaging cost per unit (RON)
   otherTaxesCost: number; // local taxes / other cost per unit (RON)
   customMarginPercent: number; // custom profit margin (e.g. 20%)
-  customVatPercent: number; // e.g. 19% VAT for the sold product
+  customVatPercent: number; // e.g. 11% (alimente) or 21% (alcool, servicii) VAT under July 2025 RO fiscal rules
   calories?: number; // Total calories per product or portion
   allergens?: string[]; // List of allergens
+  useVariableMargin?: boolean; // Whether to use variable margin based on cost tier
 }
 
 export interface SalePriceBreakdown {
@@ -33,6 +38,7 @@ export interface SalePriceBreakdown {
   salePriceBeforeVat: number; // productionCost + profitMarginAmount
   vatAmount: number; // salePriceBeforeVat * customVatPercent
   finalSalePriceWithVat: number; // salePriceBeforeVat + vatAmount
+  appliedMarginPercent?: number;
 }
 
 export interface ScannedInvoiceItem {

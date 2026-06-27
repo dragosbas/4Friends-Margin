@@ -51,6 +51,190 @@ import { RawMaterial, FinalProduct, SaleRecord, PriceAlert, ScannedInvoice, Scan
 import { INITIAL_RAW_MATERIALS, INITIAL_PRODUCTS, INITIAL_SALES } from "./data";
 import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV, normalizeMaterialName, removeDiacritics, getRecipeItemUnit, getRecipeItemFactor } from "./utils";
 
+interface SearchableIngredientSelectorProps {
+  value: string;
+  onChange: (id: string) => void;
+  rawMaterials: RawMaterial[];
+  placeholder?: string;
+  className?: string;
+}
+
+function SearchableIngredientSelector({ value, onChange, rawMaterials, placeholder = "Caută materie primă...", className = "" }: SearchableIngredientSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const optionsContainerRef = useRef<HTMLDivElement>(null);
+
+  const selectedRm = rawMaterials.find((rm) => rm.id === value);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (selectedRm) {
+      setSearchQuery(selectedRm.name);
+    } else {
+      setSearchQuery("");
+    }
+  }, [value, selectedRm]);
+
+  const filtered = React.useMemo(() => {
+    const sorted = [...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro"));
+    if (!searchQuery || (selectedRm && searchQuery === selectedRm.name)) {
+      return sorted;
+    }
+    const normQuery = removeDiacritics(searchQuery).toLowerCase().trim();
+    if (!normQuery) return sorted;
+    
+    return sorted.filter((rm) => {
+      const normName = removeDiacritics(rm.name).toLowerCase();
+      return normName.includes(normQuery);
+    });
+  }, [rawMaterials, searchQuery, selectedRm]);
+
+  // Clamp highlightedIndex when filtered list changes
+  useEffect(() => {
+    setHighlightedIndex(0);
+  }, [filtered]);
+
+  // Scroll active element into view
+  useEffect(() => {
+    if (isOpen && optionsContainerRef.current) {
+      const activeEl = optionsContainerRef.current.querySelector('[data-active="true"]');
+      if (activeEl) {
+        activeEl.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }, [highlightedIndex, isOpen]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isOpen) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter") {
+        setIsOpen(true);
+      }
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (filtered.length > 0 ? (prev + 1) % filtered.length : 0));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedIndex((prev) => (filtered.length > 0 ? (prev - 1 + filtered.length) % filtered.length : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[highlightedIndex]) {
+        const item = filtered[highlightedIndex];
+        onChange(item.id);
+        setSearchQuery(item.name);
+        setIsOpen(false);
+      }
+    } else if (e.key === "Escape") {
+      setIsOpen(false);
+    }
+  };
+
+  return (
+    <div ref={containerRef} className={`relative w-full ${className}`}>
+      <div className="relative">
+        <input
+          ref={inputRef}
+          type="text"
+          value={searchQuery}
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setIsOpen(true);
+          }}
+          onFocus={() => {
+            setIsOpen(true);
+            inputRef.current?.select();
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          className="w-full bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:bg-white focus:ring-2 focus:ring-indigo-100 focus:outline-none rounded-lg pl-8 pr-8 py-2 text-xs font-bold text-slate-800 transition-all uppercase placeholder:normal-case shadow-xs"
+        />
+        <div className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+          <Search className="w-3.5 h-3.5" />
+        </div>
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery("");
+              onChange("");
+              inputRef.current?.focus();
+            }}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full hover:bg-slate-100"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      {isOpen && (
+        <div 
+          ref={optionsContainerRef}
+          className="absolute z-50 left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl divide-y divide-slate-100"
+        >
+          {filtered.length > 0 ? (
+            filtered.map((rm, idx) => {
+              const isSelected = rm.id === value;
+              const isHighlighted = idx === highlightedIndex;
+              return (
+                <button
+                  key={rm.id}
+                  type="button"
+                  data-active={isHighlighted ? "true" : "false"}
+                  onClick={() => {
+                    onChange(rm.id);
+                    setSearchQuery(rm.name);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between transition-colors ${
+                    isHighlighted 
+                      ? "bg-indigo-600 text-white font-bold" 
+                      : isSelected 
+                        ? "bg-indigo-50 text-indigo-900 font-bold hover:bg-indigo-100" 
+                        : "text-slate-700 font-medium hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate uppercase">{rm.name}</span>
+                    <span className={`block text-[10px] mt-0.5 font-bold ${isHighlighted ? "text-indigo-100" : "text-slate-400"}`}>
+                      {rm.isPackaged ? (
+                        `Pachet: ${formatRON(rm.packagePrice || 0)} / ${rm.packageSize} ${rm.packageUnit} (${formatRON(rm.purchasePriceBeforeVat)} / ${rm.unit})`
+                      ) : (
+                        `${formatRON(rm.purchasePriceBeforeVat)} / ${rm.unit}`
+                      )}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <Check className={`w-3.5 h-3.5 ml-2 shrink-0 ${isHighlighted ? "text-white" : "text-indigo-600"}`} />
+                  )}
+                </button>
+              );
+            })
+          ) : (
+            <div className="px-3 py-3 text-center text-slate-500 text-xs">
+              <span className="block font-medium">Nu am găsit "{searchQuery}"</span>
+              <span className="block text-[10px] text-slate-400 mt-1">Creați materia primă folosind butonul de deasupra dacă este un ingredient nou.</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   // --- STATE ---
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>(() => {
@@ -122,14 +306,19 @@ export default function App() {
   const [newRmUnit, setNewRmUnit] = useState("kg");
   const [newRmPrice, setNewRmPrice] = useState("");
   const [newRmVat, setNewRmVat] = useState("11");
+  const [newRmIsPackaged, setNewRmIsPackaged] = useState(false);
+  const [newRmPackagePrice, setNewRmPackagePrice] = useState("");
+  const [newRmPackageSize, setNewRmPackageSize] = useState("");
+  const [newRmPackageUnit, setNewRmPackageUnit] = useState("kg");
   const [editingRmId, setEditingRmId] = useState<string | null>(null);
 
   // Form states - Product
   const [showProductForm, setShowProductForm] = useState(false);
   const [newProdName, setNewProdName] = useState("");
-  const [newProdLogistics, setNewProdLogistics] = useState("0");
-  const [newProdTaxes, setNewProdTaxes] = useState("0");
+  const [newProdLogistics, setNewProdLogistics] = useState("1");
+  const [newProdTaxes, setNewProdTaxes] = useState("1");
   const [newProdMargin, setNewProdMargin] = useState("20");
+  const [newProdUseVariableMargin, setNewProdUseVariableMargin] = useState(true);
   const [newProdVat, setNewProdVat] = useState("11");
   const [newProdRecipe, setNewProdRecipe] = useState<{ rawMaterialId: string; quantityNeeded: number }[]>([
     { rawMaterialId: "", quantityNeeded: 0 }
@@ -317,19 +506,41 @@ export default function App() {
   // 1. Raw Materials management
   const handleSaveRawMaterial = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newRmName.trim() || !newRmPrice) {
-      triggerToast("Vă rugăm să completați denumirea și prețul de achiziție.", "error");
+    if (!newRmName.trim()) {
+      triggerToast("Vă rugăm să completați denumirea materiei prime.", "error");
       return;
     }
 
-    const priceNum = parseFloat(newRmPrice);
+    let finalPriceNum = 0;
+    let pkgPriceNum = 0;
+    let pkgSizeNum = 0;
+
+    if (newRmIsPackaged) {
+      if (!newRmPackagePrice || !newRmPackageSize) {
+        triggerToast("Vă rugăm să introduceți prețul pachetului și cantitatea din acesta.", "error");
+        return;
+      }
+      pkgPriceNum = parseFloat(newRmPackagePrice);
+      pkgSizeNum = parseFloat(newRmPackageSize);
+
+      if (isNaN(pkgPriceNum) || pkgPriceNum < 0 || isNaN(pkgSizeNum) || pkgSizeNum <= 0) {
+        triggerToast("Datele pachetului trebuie să conțină numere pozitive valide.", "error");
+        return;
+      }
+      finalPriceNum = pkgPriceNum / pkgSizeNum;
+    } else {
+      if (!newRmPrice) {
+        triggerToast("Vă rugăm să introduceți prețul de achiziție.", "error");
+        return;
+      }
+      finalPriceNum = parseFloat(newRmPrice);
+      if (isNaN(finalPriceNum) || finalPriceNum < 0) {
+        triggerToast("Prețul trebuie să fie un număr pozitiv.", "error");
+        return;
+      }
+    }
+
     const vatNum = parseFloat(newRmVat);
-
-    if (isNaN(priceNum) || priceNum < 0) {
-      triggerToast("Prețul de achiziție trebuie să fie un număr pozitiv.", "error");
-      return;
-    }
-
     const normalizedName = normalizeMaterialName(newRmName);
     if (!normalizedName) {
       triggerToast("Numele materiei prime nu poate fi gol.", "error");
@@ -343,6 +554,8 @@ export default function App() {
       return;
     }
 
+    const finalUnit = newRmIsPackaged ? newRmPackageUnit : newRmUnit;
+
     if (editingRmId) {
       // Update existing
       setRawMaterials(prev =>
@@ -351,9 +564,13 @@ export default function App() {
             ? {
                 ...rm,
                 name: normalizedName,
-                unit: newRmUnit,
-                purchasePriceBeforeVat: priceNum,
+                unit: finalUnit,
+                purchasePriceBeforeVat: finalPriceNum,
                 vatPercent: vatNum,
+                isPackaged: newRmIsPackaged,
+                packagePrice: newRmIsPackaged ? pkgPriceNum : undefined,
+                packageSize: newRmIsPackaged ? pkgSizeNum : undefined,
+                packageUnit: newRmIsPackaged ? newRmPackageUnit : undefined,
                 lastUpdated: new Date().toISOString()
               }
             : rm
@@ -366,9 +583,13 @@ export default function App() {
       const newRm: RawMaterial = {
         id: `rm-${Date.now()}`,
         name: normalizedName,
-        unit: newRmUnit,
-        purchasePriceBeforeVat: priceNum,
+        unit: finalUnit,
+        purchasePriceBeforeVat: finalPriceNum,
         vatPercent: vatNum,
+        isPackaged: newRmIsPackaged,
+        packagePrice: newRmIsPackaged ? pkgPriceNum : undefined,
+        packageSize: newRmIsPackaged ? pkgSizeNum : undefined,
+        packageUnit: newRmIsPackaged ? newRmPackageUnit : undefined,
         lastUpdated: new Date().toISOString()
       };
       setRawMaterials(prev => [...prev, newRm]);
@@ -380,15 +601,34 @@ export default function App() {
     setNewRmPrice("");
     setNewRmUnit("kg");
     setNewRmVat("11");
+    setNewRmIsPackaged(false);
+    setNewRmPackagePrice("");
+    setNewRmPackageSize("");
+    setNewRmPackageUnit("kg");
     setShowRawMaterialModal(false);
   };
 
   const handleEditRm = (rm: RawMaterial) => {
     setEditingRmId(rm.id);
     setNewRmName(rm.name);
-    setNewRmUnit(rm.unit);
-    setNewRmPrice(rm.purchasePriceBeforeVat.toString());
     setNewRmVat(rm.vatPercent.toString());
+    
+    if (rm.isPackaged) {
+      setNewRmIsPackaged(true);
+      setNewRmPackagePrice(rm.packagePrice !== undefined ? rm.packagePrice.toString() : "");
+      setNewRmPackageSize(rm.packageSize !== undefined ? rm.packageSize.toString() : "");
+      setNewRmPackageUnit(rm.packageUnit || rm.unit);
+      setNewRmUnit(rm.packageUnit || rm.unit);
+      setNewRmPrice("");
+    } else {
+      setNewRmIsPackaged(false);
+      setNewRmPackagePrice("");
+      setNewRmPackageSize("");
+      setNewRmPackageUnit("kg");
+      setNewRmUnit(rm.unit);
+      setNewRmPrice(rm.purchasePriceBeforeVat.toString());
+    }
+    
     setShowRawMaterialModal(true);
   };
 
@@ -540,7 +780,8 @@ export default function App() {
                 customMarginPercent: margin,
                 customVatPercent: vat,
                 calories: caloriesNum,
-                allergens: allergensArr
+                allergens: allergensArr,
+                useVariableMargin: newProdUseVariableMargin
               }
             : p
         )
@@ -558,7 +799,8 @@ export default function App() {
         customMarginPercent: margin,
         customVatPercent: vat,
         calories: caloriesNum,
-        allergens: allergensArr
+        allergens: allergensArr,
+        useVariableMargin: newProdUseVariableMargin
       };
       setProducts(prev => [...prev, newProduct]);
       setSelectedProductId(newProduct.id);
@@ -568,9 +810,10 @@ export default function App() {
     // Reset Form
     setShowProductForm(false);
     setNewProdName("");
-    setNewProdLogistics("0");
-    setNewProdTaxes("0");
+    setNewProdLogistics("1");
+    setNewProdTaxes("1");
     setNewProdMargin("20");
+    setNewProdUseVariableMargin(true);
     setNewProdVat("11");
     setNewProdCalories("");
     setNewProdAllergens("");
@@ -583,6 +826,7 @@ export default function App() {
     setNewProdLogistics(prod.logisticsCost.toString());
     setNewProdTaxes(prod.otherTaxesCost.toString());
     setNewProdMargin(prod.customMarginPercent.toString());
+    setNewProdUseVariableMargin(prod.useVariableMargin !== false);
     setNewProdVat(prod.customVatPercent.toString());
     setNewProdCalories(prod.calories !== undefined ? prod.calories.toString() : "");
     setNewProdAllergens(prod.allergens ? prod.allergens.join(", ") : "");
@@ -1008,12 +1252,13 @@ export default function App() {
       id: newProductId,
       name: removeDiacritics(parsedRecipe.productName).trim().toUpperCase(),
       recipeItems,
-      logisticsCost: 0,
-      otherTaxesCost: 0,
+      logisticsCost: 1,
+      otherTaxesCost: 1,
       customMarginPercent: 20,
       customVatPercent: 11,
       calories: parsedRecipe.calories || undefined,
-      allergens: parsedRecipe.allergens || []
+      allergens: parsedRecipe.allergens || [],
+      useVariableMargin: true
     };
 
     setProducts((prev) => [...prev, newProduct]);
@@ -2160,23 +2405,17 @@ export default function App() {
                 <label className="block text-[10px] font-extrabold text-slate-700 uppercase mb-1">
                   1. Alege ingredientul duplicat / incorect (Care va fi ȘTERS):
                 </label>
-                <select
+                <SearchableIngredientSelector
                   value={mergeSourceId}
-                  onChange={(e) => {
-                    setMergeSourceId(e.target.value);
-                    if (e.target.value === mergeTargetId) {
+                  onChange={(val) => {
+                    setMergeSourceId(val);
+                    if (val === mergeTargetId) {
                       setMergeTargetId("");
                     }
                   }}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-semibold focus:outline-indigo-600"
-                >
-                  <option value="">Alege ingredientul pe care vrei să îl elimini...</option>
-                  {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
-                    <option key={rm.id} value={rm.id}>
-                      {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
-                    </option>
-                  ))}
-                </select>
+                  rawMaterials={rawMaterials}
+                  placeholder="Caută și alege ingredientul de eliminat..."
+                />
               </div>
 
               {/* Swap Button */}
@@ -2202,22 +2441,13 @@ export default function App() {
                 <label className="block text-[10px] font-extrabold text-slate-700 uppercase mb-1">
                   2. Alege ingredientul principal / corect (Pe care îl PĂSTREZI):
                 </label>
-                <select
+                <SearchableIngredientSelector
                   value={mergeTargetId}
-                  onChange={(e) => setMergeTargetId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-semibold focus:outline-indigo-600"
-                  disabled={!mergeSourceId}
-                >
-                  <option value="">Alege ingredientul corect cu prețul bun...</option>
-                  {[...rawMaterials]
-                    .filter((rm) => rm.id !== mergeSourceId)
-                    .sort((a, b) => a.name.localeCompare(b.name, "ro"))
-                    .map((rm) => (
-                      <option key={rm.id} value={rm.id}>
-                        {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
-                      </option>
-                    ))}
-                </select>
+                  onChange={(val) => setMergeTargetId(val)}
+                  rawMaterials={rawMaterials.filter((rm) => rm.id !== mergeSourceId)}
+                  placeholder={!mergeSourceId ? "Mai întâi selectați pasul 1..." : "Caută și alege ingredientul de păstrat..."}
+                  className={!mergeSourceId ? "opacity-50 pointer-events-none" : ""}
+                />
               </div>
 
               {/* Diagnostic Info Section */}
@@ -2346,20 +2576,108 @@ export default function App() {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Preț de Achiziție (Fără TVA) per U.M.</label>
-                <div className="relative">
+              {/* Packaging mode toggle */}
+              <div className="bg-indigo-50/50 p-3 rounded-xl border border-indigo-100/50 space-y-3">
+                <label className="flex items-start gap-2 cursor-pointer">
                   <input
-                    type="number"
-                    step="0.0001"
-                    value={newRmPrice}
-                    onChange={(e) => setNewRmPrice(e.target.value)}
-                    placeholder="0.00"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pr-12 text-xs font-mono text-right font-semibold text-slate-800 focus:outline-indigo-600"
-                    required
+                    type="checkbox"
+                    checked={newRmIsPackaged}
+                    onChange={(e) => {
+                      setNewRmIsPackaged(e.target.checked);
+                      if (e.target.checked) {
+                        setNewRmPrice("");
+                      } else {
+                        setNewRmPackagePrice("");
+                        setNewRmPackageSize("");
+                      }
+                    }}
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 mt-0.5"
                   />
-                  <div className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">RON</div>
-                </div>
+                  <div className="text-xs">
+                    <span className="block font-bold text-slate-700">Preț per pachet / unitate vânzare furnizor</span>
+                    <span className="block text-[10px] text-slate-500">Ex: sac 2.5kg de cartofi wedges, cutie 10buc, etc.</span>
+                  </div>
+                </label>
+
+                {newRmIsPackaged ? (
+                  <div className="space-y-2.5 animate-in fade-in duration-150">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Preț Pachet (Fără TVA)</label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            step="0.0001"
+                            value={newRmPackagePrice}
+                            onChange={(e) => setNewRmPackagePrice(e.target.value)}
+                            placeholder="Ex: 30"
+                            className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-mono text-right focus:outline-indigo-600"
+                            required={newRmIsPackaged}
+                          />
+                          <span className="absolute right-2 top-2 text-[10px] font-bold text-slate-400">RON</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Cantitate în Pachet</label>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          value={newRmPackageSize}
+                          onChange={(e) => setNewRmPackageSize(e.target.value)}
+                          placeholder="Ex: 2.5"
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-mono text-right focus:outline-indigo-600"
+                          required={newRmIsPackaged}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Unitate Pachet (U.M.)</label>
+                        <select
+                          value={newRmPackageUnit}
+                          onChange={(e) => {
+                            setNewRmPackageUnit(e.target.value);
+                            setNewRmUnit(e.target.value);
+                          }}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-medium focus:outline-indigo-600"
+                        >
+                          <option value="kg">kg</option>
+                          <option value="l">litru (l)</option>
+                          <option value="buc">bucată (buc)</option>
+                          <option value="m">metru (m)</option>
+                          <option value="g">gram (g)</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col justify-end text-right pb-1">
+                        <span className="text-[10px] text-slate-400 font-bold">Preț rezultat calculat:</span>
+                        <span className="text-xs font-mono font-bold text-indigo-600">
+                          {parseFloat(newRmPackagePrice) && parseFloat(newRmPackageSize)
+                            ? `${(parseFloat(newRmPackagePrice) / parseFloat(newRmPackageSize)).toFixed(4)} RON / ${newRmPackageUnit}`
+                            : "0.00 RON"}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-indigo-600 font-medium italic mt-1 leading-normal">
+                      Aplicația va folosi acest preț rezultat ca bază pentru calculul la gramaj sau mililitru în rețete!
+                    </p>
+                  </div>
+                ) : (
+                  <div className="animate-in fade-in duration-150">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Preț de Achiziție (Fără TVA) per U.M.</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={newRmPrice}
+                        onChange={(e) => setNewRmPrice(e.target.value)}
+                        placeholder="0.00"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pr-12 text-xs font-mono text-right font-semibold text-slate-800 focus:outline-indigo-600"
+                        required={!newRmIsPackaged}
+                      />
+                      <div className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">RON</div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">
@@ -2706,9 +3024,10 @@ export default function App() {
                     onClick={() => {
                       setEditingProductId(null);
                       setNewProdName("");
-                      setNewProdLogistics("0");
-                      setNewProdTaxes("0");
+                      setNewProdLogistics("1");
+                      setNewProdTaxes("1");
                       setNewProdMargin("20");
+                      setNewProdUseVariableMargin(true);
                       setNewProdVat("11");
                       setNewProdRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
                       setShowProductForm(true);
@@ -2781,50 +3100,47 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                      <div className="space-y-3">
                         {newProdRecipe.map((recipeItem, index) => {
                           const selectedRm = rawMaterials.find((rm) => rm.id === recipeItem.rawMaterialId);
                           const unitLabel = selectedRm ? getRecipeItemUnit(selectedRm.unit) : "";
                           
                           return (
-                            <div key={index} className="flex items-center gap-1.5">
-                              <select
-                                value={recipeItem.rawMaterialId}
-                                onChange={(e) => handleRecipeRowChange(index, "rawMaterialId", e.target.value)}
-                                className="flex-1 bg-slate-50 border border-slate-200 rounded-md p-1 text-[11px] font-medium focus:outline-indigo-600"
-                                required
-                              >
-                                <option value="">Alege ingredient...</option>
-                                {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
-                                  <option key={rm.id} value={rm.id}>
-                                    {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="relative flex items-center shrink-0">
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={recipeItem.quantityNeeded || ""}
-                                  onChange={(e) => handleRecipeRowChange(index, "quantityNeeded", e.target.value)}
-                                  placeholder="Cant."
-                                  className="w-24 bg-slate-50 border border-slate-200 rounded-md py-1 pl-1.5 pr-7 text-[11px] font-mono text-right focus:outline-indigo-600"
-                                  required
+                            <div key={index} className="flex flex-col sm:flex-row sm:items-center gap-2 pb-2.5 sm:pb-0 border-b border-slate-100 sm:border-none">
+                              <div className="flex-1 min-w-0">
+                                <SearchableIngredientSelector
+                                  value={recipeItem.rawMaterialId}
+                                  onChange={(val) => handleRecipeRowChange(index, "rawMaterialId", val)}
+                                  rawMaterials={rawMaterials}
+                                  placeholder="Alege ingredient..."
                                 />
-                                {unitLabel && (
-                                  <span className="absolute right-1.5 text-[9px] font-extrabold text-indigo-600 bg-indigo-50/80 px-1 py-0.5 rounded pointer-events-none uppercase">
-                                    {unitLabel}
-                                  </span>
-                                )}
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveRecipeRow(index)}
-                                className="text-rose-500 hover:text-rose-700 p-1 shrink-0"
-                                disabled={newProdRecipe.length === 1}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex items-center gap-1.5 shrink-0 justify-end sm:justify-start">
+                                <div className="relative flex items-center shrink-0">
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={recipeItem.quantityNeeded || ""}
+                                    onChange={(e) => handleRecipeRowChange(index, "quantityNeeded", e.target.value)}
+                                    placeholder="Cant."
+                                    className="w-24 bg-slate-50 border border-slate-200 rounded-md py-1.5 pl-2 pr-7 text-[11px] font-mono text-right focus:outline-indigo-600"
+                                    required
+                                  />
+                                  {unitLabel && (
+                                    <span className="absolute right-1.5 text-[9px] font-extrabold text-indigo-600 bg-indigo-50/80 px-1 py-0.5 rounded pointer-events-none uppercase">
+                                      {unitLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveRecipeRow(index)}
+                                  className="text-rose-500 hover:text-rose-700 p-1.5 shrink-0 hover:bg-rose-50 rounded-md transition-colors"
+                                  disabled={newProdRecipe.length === 1}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -2858,6 +3174,21 @@ export default function App() {
                       </div>
                     </div>
 
+                    <div className="bg-indigo-50/40 p-2.5 rounded-lg border border-indigo-100/50 space-y-1.5">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newProdUseVariableMargin}
+                          onChange={(e) => setNewProdUseVariableMargin(e.target.checked)}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                        />
+                        <span className="text-[11px] font-bold text-slate-700">Marjă profit variabilă automată</span>
+                      </label>
+                      <p className="text-[9px] text-slate-500 leading-tight">
+                        Calculată automat după costul materiilor prime (sub 2.5 lei: 40%, până în 3.99 lei: 37%, până în 6.5 lei: 34%, până în 8.5 lei: 30%, până în 9.99 lei: 27%, până în 12.5 lei: 25%, până în 19.99 lei: 22%, peste 20 lei: 20%)
+                      </p>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center gap-0.5">
@@ -2866,10 +3197,12 @@ export default function App() {
                         <input
                           type="number"
                           step="0.5"
-                          value={newProdMargin}
+                          value={newProdUseVariableMargin ? "" : newProdMargin}
                           onChange={(e) => setNewProdMargin(e.target.value)}
-                          className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-mono text-right focus:outline-indigo-600"
-                          required
+                          disabled={newProdUseVariableMargin}
+                          placeholder="Variabilă"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-1.5 text-xs font-mono text-right focus:outline-indigo-600 disabled:opacity-75 disabled:bg-slate-100"
+                          required={!newProdUseVariableMargin}
                         />
                       </div>
                       <div>
@@ -2969,7 +3302,7 @@ export default function App() {
                               {formatRON(activeBreakdown.finalSalePriceWithVat)}
                             </span>
                             <span className="block text-[9px] text-indigo-600 font-bold uppercase tracking-wide">
-                              M: {prod.customMarginPercent}%
+                              M: {activeBreakdown.appliedMarginPercent !== undefined ? activeBreakdown.appliedMarginPercent : prod.customMarginPercent}% {prod.useVariableMargin !== false && "★"}
                             </span>
                           </div>
                           
@@ -3089,7 +3422,7 @@ export default function App() {
                           {formatRON(activeProductBreakdown.profitMarginAmount)}
                         </p>
                         <span className="text-[9px] text-indigo-600 font-bold">
-                          Marjă aplicată: +{activeProduct.customMarginPercent}%
+                          Marjă aplicată: +{activeProductBreakdown.appliedMarginPercent !== undefined ? activeProductBreakdown.appliedMarginPercent : activeProduct.customMarginPercent}% {activeProduct.useVariableMargin !== false && "(Variabilă)"}
                         </span>
                       </div>
 
@@ -3234,7 +3567,7 @@ export default function App() {
                     <div>
                       <h4 className="font-bold text-amber-950 text-xs">Ajustări în timp real:</h4>
                       <p className="text-[11px] text-amber-950/80 leading-relaxed mt-0.5">
-                        Dacă prețul de achiziție al oricărui ingredient din tabelul de mai sus se modifică pe facturile viitoare (prin scanare sau SPV), aplicația vă va avertiza instantaneu. Prețul de producție și prețul final de vânzare vor fi recalculate imediat pentru a vă păstra neatinsă marja de profit dorită de <strong>{activeProduct.customMarginPercent}%</strong>.
+                        Dacă prețul de achiziție al oricărui ingredient din tabelul de mai sus se modifică pe facturile viitoare (prin scanare sau SPV), aplicația vă va avertiza instantaneu. Prețul de producție și prețul final de vânzare vor fi recalculate imediat pentru a vă păstra neatinsă marja de profit dorită de <strong>{activeProductBreakdown.appliedMarginPercent !== undefined ? activeProductBreakdown.appliedMarginPercent : activeProduct.customMarginPercent}%</strong>.
                       </p>
                     </div>
                   </div>
@@ -3373,30 +3706,129 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Preț Achiziție (Fără TVA)</label>
+                  {/* Packaging mode toggle */}
+                  <div className="bg-indigo-50/50 p-2.5 rounded-xl border border-indigo-100/50 space-y-2">
+                    <label className="flex items-start gap-1.5 cursor-pointer">
                       <input
-                        type="number"
-                        step="0.0001"
-                        value={newRmPrice}
-                        onChange={(e) => setNewRmPrice(e.target.value)}
-                        placeholder="0.00 RON"
-                        className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-mono text-right focus:outline-indigo-600"
-                        required
+                        type="checkbox"
+                        checked={newRmIsPackaged}
+                        onChange={(e) => {
+                          setNewRmIsPackaged(e.target.checked);
+                          if (e.target.checked) {
+                            setNewRmPrice("");
+                          } else {
+                            setNewRmPackagePrice("");
+                            setNewRmPackageSize("");
+                          }
+                        }}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 mt-0.5"
                       />
-                    </div>
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Procent TVA (%)</label>
-                      <select
-                        value={newRmVat}
-                        onChange={(e) => setNewRmVat(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-medium focus:outline-indigo-600"
-                      >
-                        <option value="11">11% (Alimente)</option>
-                        <option value="21">21% (Non-alimente / Altele)</option>
-                      </select>
-                    </div>
+                      <div className="text-[10px]">
+                        <span className="block font-bold text-slate-700">Preț pachet / unitate vânzare furnizor</span>
+                      </div>
+                    </label>
+
+                    {newRmIsPackaged ? (
+                      <div className="space-y-2 animate-in fade-in duration-150">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[8px] font-bold text-slate-500 uppercase mb-0.5">Preț Pachet (Fără TVA)</label>
+                            <div className="relative">
+                              <input
+                                type="number"
+                                step="0.0001"
+                                value={newRmPackagePrice}
+                                onChange={(e) => setNewRmPackagePrice(e.target.value)}
+                                placeholder="Ex: 30"
+                                className="w-full bg-white border border-slate-200 rounded-lg p-1 text-[11px] font-mono text-right focus:outline-indigo-600"
+                                required={newRmIsPackaged}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-[8px] font-bold text-slate-500 uppercase mb-0.5">Cantitate în Pachet</label>
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={newRmPackageSize}
+                              onChange={(e) => setNewRmPackageSize(e.target.value)}
+                              placeholder="Ex: 2.5"
+                              className="w-full bg-white border border-slate-200 rounded-lg p-1 text-[11px] font-mono text-right focus:outline-indigo-600"
+                              required={newRmIsPackaged}
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[8px] font-bold text-slate-500 uppercase mb-0.5">Unitate Pachet (U.M.)</label>
+                            <select
+                              value={newRmPackageUnit}
+                              onChange={(e) => {
+                                setNewRmPackageUnit(e.target.value);
+                                setNewRmUnit(e.target.value);
+                              }}
+                              className="w-full bg-white border border-slate-200 rounded-lg p-1 text-[11px] font-medium focus:outline-indigo-600"
+                            >
+                              <option value="kg">kg</option>
+                              <option value="l">litru</option>
+                              <option value="buc">buc</option>
+                              <option value="m">metru</option>
+                              <option value="g">gram</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col justify-end text-right">
+                            <span className="text-[8px] text-slate-400 font-bold">Rezultat calculat:</span>
+                            <span className="text-[10px] font-mono font-bold text-indigo-600">
+                              {parseFloat(newRmPackagePrice) && parseFloat(newRmPackageSize)
+                                ? `${(parseFloat(newRmPackagePrice) / parseFloat(newRmPackageSize)).toFixed(4)} RON`
+                                : "0.00 RON"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2 animate-in fade-in duration-150">
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Preț Achiziție (Fără TVA)</label>
+                          <input
+                            type="number"
+                            step="0.0001"
+                            value={newRmPrice}
+                            onChange={(e) => setNewRmPrice(e.target.value)}
+                            placeholder="0.00 RON"
+                            className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-mono text-right focus:outline-indigo-600"
+                            required={!newRmIsPackaged}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Procent TVA (%)</label>
+                          <select
+                            value={newRmVat}
+                            onChange={(e) => setNewRmVat(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-medium focus:outline-indigo-600"
+                          >
+                            <option value="11">11% (Alimente)</option>
+                            <option value="21">21% (Non-alimente / Altele)</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {newRmIsPackaged && (
+                      <div className="grid grid-cols-2 gap-2 animate-in fade-in duration-150 pt-1">
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">Procent TVA (%)</label>
+                          <select
+                            value={newRmVat}
+                            onChange={(e) => setNewRmVat(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg p-1 text-[11px] font-medium focus:outline-indigo-600"
+                          >
+                            <option value="11">11% (Alimente)</option>
+                            <option value="21">21% (Non-alimente / Altele)</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-end gap-2 pt-1">
@@ -3409,6 +3841,10 @@ export default function App() {
                           setNewRmPrice("");
                           setNewRmUnit("kg");
                           setNewRmVat("11");
+                          setNewRmIsPackaged(false);
+                          setNewRmPackagePrice("");
+                          setNewRmPackageSize("");
+                          setNewRmPackageUnit("kg");
                         }}
                         className="bg-slate-200 text-slate-700 text-[11px] font-bold px-3 py-1.5 rounded-lg hover:bg-slate-300 transition-all cursor-pointer"
                       >
@@ -3482,19 +3918,40 @@ export default function App() {
                   sortedAndFilteredRawMaterials.map((rm) => (
                     <div key={rm.id} className="p-3.5 hover:bg-slate-50 flex items-center justify-between group">
                       <div className="min-w-0 pr-2">
-                        <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{rm.name}</h4>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{rm.name}</h4>
+                          {rm.isPackaged && (
+                            <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide">
+                              Pachet: {rm.packageSize} {rm.packageUnit}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-[10px] text-slate-500 font-medium mt-0.5">
                           Actualizat la: {new Date(rm.lastUpdated).toLocaleDateString("ro-RO")} • TVA {rm.vatPercent}%
+                          {rm.isPackaged && ` • Unitate bază: ${rm.unit}`}
                         </p>
                       </div>
                       <div className="text-right flex items-center gap-2">
                         <div>
-                          <span className="block font-mono font-bold text-xs sm:text-sm text-slate-900">
-                            {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
-                          </span>
-                          <span className="block text-[9px] text-slate-400 font-semibold">
-                            {formatRON(rm.purchasePriceBeforeVat * (1 + rm.vatPercent / 100))} cu TVA
-                          </span>
+                          {rm.isPackaged ? (
+                            <>
+                              <span className="block font-mono font-bold text-xs sm:text-sm text-indigo-700" title="Preț per pachet furnizor">
+                                {formatRON(rm.packagePrice || 0)} / pachet
+                              </span>
+                              <span className="block text-[9px] text-slate-400 font-semibold">
+                                {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="block font-mono font-bold text-xs sm:text-sm text-slate-900">
+                                {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
+                              </span>
+                              <span className="block text-[9px] text-slate-400 font-semibold">
+                                {formatRON(rm.purchasePriceBeforeVat * (1 + rm.vatPercent / 100))} cu TVA
+                              </span>
+                            </>
+                          )}
                         </div>
                         <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-1">
                           <button
