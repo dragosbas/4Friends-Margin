@@ -2,173 +2,128 @@ import { RawMaterial, FinalProduct, SaleRecord } from "./types";
 
 export const INITIAL_RAW_MATERIALS: RawMaterial[] = [
   {
-    id: "rm-1",
-    name: "Făină superioară tip 000",
+    id: "rm-piept-pui",
+    name: "piept de pui",
     unit: "kg",
-    purchasePriceBeforeVat: 4.5,
+    purchasePriceBeforeVat: 22.50,
     vatPercent: 11,
-    lastUpdated: "2026-06-15T12:00:00Z"
+    lastUpdated: new Date().toISOString()
   },
   {
-    id: "rm-2",
-    name: "Zahăr tos",
+    id: "rm-cartofi",
+    name: "cartofi",
     unit: "kg",
-    purchasePriceBeforeVat: 5.2,
-    vatPercent: 21,
-    lastUpdated: "2026-06-16T14:30:00Z"
-  },
-  {
-    id: "rm-3",
-    name: "Unt românesc 82% grăsime",
-    unit: "kg",
-    purchasePriceBeforeVat: 42.0,
+    purchasePriceBeforeVat: 3.20,
     vatPercent: 11,
-    lastUpdated: "2026-06-20T09:15:00Z"
+    lastUpdated: new Date().toISOString()
   },
   {
-    id: "rm-4",
-    name: "Lapte proaspăt 3.5% grăsime",
+    id: "rm-rosii",
+    name: "roșii proaspete",
+    unit: "kg",
+    purchasePriceBeforeVat: 7.50,
+    vatPercent: 11,
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "rm-ceafa-porc",
+    name: "ceafă de porc",
+    unit: "kg",
+    purchasePriceBeforeVat: 27.00,
+    vatPercent: 11,
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "rm-branza-telemea",
+    name: "telemea de vacă",
+    unit: "kg",
+    purchasePriceBeforeVat: 25.00,
+    vatPercent: 11,
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "rm-ulei",
+    name: "ulei floarea soarelui",
     unit: "l",
     purchasePriceBeforeVat: 6.50,
     vatPercent: 11,
-    lastUpdated: "2026-06-21T10:00:00Z"
+    lastUpdated: new Date().toISOString()
   },
   {
-    id: "rm-5",
-    name: "Ambalaj cutie biodegradabilă premium",
+    id: "rm-castraveti",
+    name: "castraveți proaspeți",
+    unit: "kg",
+    purchasePriceBeforeVat: 6.00,
+    vatPercent: 11,
+    lastUpdated: new Date().toISOString()
+  },
+  {
+    id: "rm-ambalaj",
+    name: "ambalaj platou plastic premium",
     unit: "buc",
-    purchasePriceBeforeVat: 2.50,
+    purchasePriceBeforeVat: 3.50,
     vatPercent: 21,
-    lastUpdated: "2026-06-22T11:45:00Z"
+    lastUpdated: new Date().toISOString()
   }
 ];
 
 export const INITIAL_PRODUCTS: FinalProduct[] = [
   {
-    id: "p-1",
-    name: "Cozonac Tradițional Premium (1kg)",
+    id: "prod-grill",
+    name: "Platou Cald Grill Fest (4-6 pers)",
     recipeItems: [
-      { rawMaterialId: "rm-1", quantityNeeded: 0.6 }, // 0.6 kg făină = 2.7 RON
-      { rawMaterialId: "rm-2", quantityNeeded: 0.15 }, // 0.15 kg zahăr = 0.78 RON
-      { rawMaterialId: "rm-3", quantityNeeded: 0.12 }, // 0.12 kg unt = 5.04 RON
-      { rawMaterialId: "rm-4", quantityNeeded: 0.25 }, // 0.25 l lapte = 1.625 RON
-      { rawMaterialId: "rm-5", quantityNeeded: 1.0 } // 1 ambalaj = 2.50 RON
-    ], // Total Raw Materials = 12.645 RON
-    logisticsCost: 3.50, // transport + manipulare
-    otherTaxesCost: 1.20, // utilități + regie directă
-    customMarginPercent: 35, // marjă de profit de 35%
-    customVatPercent: 21 // TVA la vânzare (produs cu zahăr)
+      { rawMaterialId: "rm-piept-pui", quantityNeeded: 0.8 },
+      { rawMaterialId: "rm-ceafa-porc", quantityNeeded: 0.8 },
+      { rawMaterialId: "rm-cartofi", quantityNeeded: 1.2 },
+      { rawMaterialId: "rm-ulei", quantityNeeded: 0.15 },
+      { rawMaterialId: "rm-ambalaj", quantityNeeded: 1.0 }
+    ],
+    logisticsCost: 5.0,
+    otherTaxesCost: 2.0,
+    customMarginPercent: 45.0,
+    customVatPercent: 11.0
   },
   {
-    id: "p-2",
-    name: "Tort Diplomat cu Fructe (1.5kg)",
+    id: "prod-traditional",
+    name: "Platou Aperitiv Tradițional (4-6 pers)",
     recipeItems: [
-      { rawMaterialId: "rm-1", quantityNeeded: 0.3 }, // 0.3 kg făină
-      { rawMaterialId: "rm-2", quantityNeeded: 0.25 }, // 0.25 kg zahăr
-      { rawMaterialId: "rm-3", quantityNeeded: 0.35 }, // 0.35 kg unt
-      { rawMaterialId: "rm-4", quantityNeeded: 0.4 }, // 0.4 l lapte
-      { rawMaterialId: "rm-5", quantityNeeded: 1.0 } // 1 ambalaj
+      { rawMaterialId: "rm-branza-telemea", quantityNeeded: 0.6 },
+      { rawMaterialId: "rm-rosii", quantityNeeded: 0.5 },
+      { rawMaterialId: "rm-castraveti", quantityNeeded: 0.5 },
+      { rawMaterialId: "rm-ambalaj", quantityNeeded: 1.0 }
     ],
-    logisticsCost: 5.50,
-    otherTaxesCost: 2.30,
-    customMarginPercent: 45,
-    customVatPercent: 21 // TVA la vânzare (produs cu zahăr)
+    logisticsCost: 4.0,
+    otherTaxesCost: 1.0,
+    customMarginPercent: 40.0,
+    customVatPercent: 11.0
   }
 ];
 
 export const INITIAL_SALES: SaleRecord[] = [
-  // Aprilie 2026
   {
-    id: "s-1",
-    productId: "p-1",
-    productName: "Cozonac Tradițional Premium (1kg)",
-    quantity: 80,
-    salePriceBeforeVat: 23.42,
-    salePriceWithVat: 25.53,
-    totalRevenueBeforeVat: 1873.60,
-    totalRevenueWithVat: 2042.40,
-    totalCost: 1387.60, // approx cost
-    totalProfit: 486.00,
-    date: "2026-04-10"
+    id: "sale-1",
+    productId: "prod-grill",
+    productName: "Platou Cald Grill Fest (4-6 pers)",
+    quantity: 5,
+    salePriceBeforeVat: 110.50,
+    salePriceWithVat: 120.45,
+    totalRevenueBeforeVat: 552.50,
+    totalRevenueWithVat: 602.25,
+    totalCost: 310.00,
+    totalProfit: 242.50,
+    date: new Date().toISOString().split("T")[0]
   },
   {
-    id: "s-2",
-    productId: "p-2",
-    productName: "Tort Diplomat cu Fructe (1.5kg)",
-    quantity: 35,
-    salePriceBeforeVat: 46.10,
-    salePriceWithVat: 50.25,
-    totalRevenueBeforeVat: 1613.50,
-    totalRevenueWithVat: 1758.75,
-    totalCost: 1113.50,
-    totalProfit: 500.00,
-    date: "2026-04-20"
-  },
-  // Mai 2026
-  {
-    id: "s-3",
-    productId: "p-1",
-    productName: "Cozonac Tradițional Premium (1kg)",
-    quantity: 110,
-    salePriceBeforeVat: 23.42,
-    salePriceWithVat: 25.53,
-    totalRevenueBeforeVat: 2576.20,
-    totalRevenueWithVat: 2808.30,
-    totalCost: 1907.95,
-    totalProfit: 668.25,
-    date: "2026-05-15"
-  },
-  {
-    id: "s-4",
-    productId: "p-2",
-    productName: "Tort Diplomat cu Fructe (1.5kg)",
-    quantity: 48,
-    salePriceBeforeVat: 46.10,
-    salePriceWithVat: 50.25,
-    totalRevenueBeforeVat: 2212.80,
-    totalRevenueWithVat: 2412.00,
-    totalCost: 1527.36,
-    totalProfit: 685.44,
-    date: "2026-05-24"
-  },
-  // Iunie 2026 (Curent)
-  {
-    id: "s-5",
-    productId: "p-1",
-    productName: "Cozonac Tradițional Premium (1kg)",
-    quantity: 145,
-    salePriceBeforeVat: 23.42,
-    salePriceWithVat: 25.53,
-    totalRevenueBeforeVat: 3395.90,
-    totalRevenueWithVat: 3701.85,
-    totalCost: 2515.02,
-    totalProfit: 880.88,
-    date: "2026-06-05"
-  },
-  {
-    id: "s-6",
-    productId: "p-2",
-    productName: "Tort Diplomat cu Fructe (1.5kg)",
-    quantity: 62,
-    salePriceBeforeVat: 46.10,
-    salePriceWithVat: 50.25,
-    totalRevenueBeforeVat: 2858.20,
-    totalRevenueWithVat: 3115.50,
-    totalCost: 1972.84,
-    totalProfit: 885.36,
-    date: "2026-06-18"
-  },
-  {
-    id: "s-7",
-    productId: "p-1",
-    productName: "Cozonac Tradițional Premium (1kg)",
-    quantity: 30,
-    salePriceBeforeVat: 23.42,
-    salePriceWithVat: 25.53,
-    totalRevenueBeforeVat: 702.60,
-    totalRevenueWithVat: 765.90,
-    totalCost: 520.35,
-    totalProfit: 182.25,
-    date: "2026-06-25"
+    id: "sale-2",
+    productId: "prod-traditional",
+    productName: "Platou Aperitiv Tradițional (4-6 pers)",
+    quantity: 3,
+    salePriceBeforeVat: 68.00,
+    salePriceWithVat: 74.12,
+    totalRevenueBeforeVat: 204.00,
+    totalRevenueWithVat: 222.36,
+    totalCost: 115.00,
+    totalProfit: 89.00,
+    date: new Date().toISOString().split("T")[0]
   }
 ];

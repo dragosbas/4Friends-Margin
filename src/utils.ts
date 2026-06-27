@@ -263,3 +263,33 @@ export function exportToCSV(
   link.click();
   document.body.removeChild(link);
 }
+
+/**
+ * Removes Romanian diacritics and replaces them with standard Latin letters.
+ */
+export function removeDiacritics(str: string): string {
+  if (!str) return "";
+  const from = "ĂÂÎȘȚăâîșțáéíóúýÁÉÍÓÚÝäëïöüÄËÏÖÜâêîôûÂÊÎÔÛşţŞŢ";
+  const to =   "AAISTaaistaeioouyAEIOOUYaeiouAEIOUaeiouAEIOUstST";
+  let res = "";
+  for (let i = 0; i < str.length; i++) {
+    const idx = from.indexOf(str[i]);
+    if (idx !== -1) {
+      res += to[idx];
+    } else {
+      res += str[i];
+    }
+  }
+  return res;
+}
+
+/**
+ * Normalizes a product/raw material name:
+ * 1. Removes Romanian diacritics
+ * 2. Converts to UPPERCASE
+ * 3. Collapses multiple spaces and trims
+ */
+export function normalizeMaterialName(str: string): string {
+  return removeDiacritics(str).toUpperCase().replace(/\s+/g, " ").trim();
+}
+

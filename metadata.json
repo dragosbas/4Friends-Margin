@@ -1,6 +1,6 @@
 {
   "name": "4Friends Margin",
-  "description": "Aplicatie inteligenta de calcul preturi de vanzare, scanare facturi cu inteligenta artificiala (Gemini) si monitorizare profitabilitate lunara.",
+  "description": "Asistent inteligent de calcul prețuri de producție și profitabilitate pentru Fabrica de Platouri, cu scanare AI Gemini și sincronizare directă din ANAF SPV a facturilor de achiziție ingrediente mâncare gătită.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

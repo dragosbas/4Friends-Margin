@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
+import JSZip from "jszip";
 import {
   Calculator,
   Camera,
   FileText,
+  FileArchive,
   TrendingUp,
   AlertTriangle,
   Percent,
@@ -24,7 +26,9 @@ import {
   X,
   Smartphone,
   Eye,
-  CheckSquare
+  CheckSquare,
+  Database,
+  Search
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -44,23 +48,54 @@ import {
 
 import { RawMaterial, FinalProduct, SaleRecord, PriceAlert, ScannedInvoice, ScannedInvoiceItem, SalePriceBreakdown } from "./types";
 import { INITIAL_RAW_MATERIALS, INITIAL_PRODUCTS, INITIAL_SALES } from "./data";
-import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV } from "./utils";
+import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV, normalizeMaterialName, removeDiacritics } from "./utils";
 
 export default function App() {
   // --- STATE ---
   const [rawMaterials, setRawMaterials] = useState<RawMaterial[]>(() => {
     const saved = localStorage.getItem("raw_materials");
-    return saved ? JSON.parse(saved) : INITIAL_RAW_MATERIALS;
+    let loaded: RawMaterial[] = [];
+    if (saved === null) {
+      loaded = INITIAL_RAW_MATERIALS;
+    } else {
+      try {
+        loaded = JSON.parse(saved);
+      } catch {
+        loaded = [];
+      }
+    }
+    // Normalize and remove duplicates to guarantee clean data on start
+    const normalizedList: RawMaterial[] = [];
+    loaded.forEach(rm => {
+      const cleanName = normalizeMaterialName(rm.name);
+      if (!normalizedList.some(item => normalizeMaterialName(item.name) === cleanName)) {
+        normalizedList.push({
+          ...rm,
+          name: cleanName
+        });
+      }
+    });
+    return normalizedList;
   });
 
   const [products, setProducts] = useState<FinalProduct[]>(() => {
     const saved = localStorage.getItem("final_products");
-    return saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
+    if (saved === null) return INITIAL_PRODUCTS;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return [];
+    }
   });
 
   const [sales, setSales] = useState<SaleRecord[]>(() => {
     const saved = localStorage.getItem("sales_history");
-    return saved ? JSON.parse(saved) : INITIAL_SALES;
+    if (saved === null) return INITIAL_SALES;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return [];
+    }
   });
 
   const [alerts, setAlerts] = useState<PriceAlert[]>(() => {
@@ -72,8 +107,13 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"calculator" | "inventory" | "reports">("calculator");
   const [selectedProductId, setSelectedProductId] = useState<string>(() => {
     const saved = localStorage.getItem("final_products");
-    const parsed = saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
-    return parsed[0]?.id || "";
+    if (saved === null) return INITIAL_PRODUCTS[0]?.id || "";
+    try {
+      const parsed = JSON.parse(saved);
+      return parsed[0]?.id || "";
+    } catch {
+      return "";
+    }
   });
 
   // Form states - Raw Material
@@ -88,7 +128,7 @@ export default function App() {
   const [newProdName, setNewProdName] = useState("");
   const [newProdLogistics, setNewProdLogistics] = useState("0");
   const [newProdTaxes, setNewProdTaxes] = useState("0");
-  const [newProdMargin, setNewProdMargin] = useState("30");
+  const [newProdMargin, setNewProdMargin] = useState("20");
   const [newProdVat, setNewProdVat] = useState("11");
   const [newProdRecipe, setNewProdRecipe] = useState<{ rawMaterialId: string; quantityNeeded: number }[]>([
     { rawMaterialId: "", quantityNeeded: 0 }
@@ -103,15 +143,48 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanStatusLog, setScanStatusLog] = useState<string[]>([]);
   const [scannedInvoiceResult, setScannedInvoiceResult] = useState<ScannedInvoice | null>(null);
+  const [uploadedInvoicesQueue, setUploadedInvoicesQueue] = useState<ScannedInvoice[]>([]);
+  const [invoiceMappings, setInvoiceMappings] = useState<any[] | null>(null);
+  const [isMappingInvoice, setIsMappingInvoice] = useState(false);
   const [xmlInputText, setXmlInputText] = useState("");
   const [showXmlInput, setShowXmlInput] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showRawMaterialModal, setShowRawMaterialModal] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Filters
   const [filterMonth, setFilterMonth] = useState("All");
+  const [searchRmQuery, setSearchRmQuery] = useState("");
+  const [selectedRmLetter, setSelectedRmLetter] = useState("ALL");
 
   // Alert system check
   const [toastMessage, setToastMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+
+  // ANAF SPV OAuth connection states
+  const [anafConnected, setAnafConnected] = useState<boolean>(() => {
+    return localStorage.getItem("anaf_connected") === "true";
+  });
+  const [anafCompany, setAnafCompany] = useState<string>(() => {
+    return localStorage.getItem("anaf_company") || "";
+  });
+  const [anafCif, setAnafCif] = useState<string>(() => {
+    return localStorage.getItem("anaf_cif") || "";
+  });
+  const [anafExpiresAt, setAnafExpiresAt] = useState<string>(() => {
+    return localStorage.getItem("anaf_expires_at") || "";
+  });
+  const [isSyncingAnaf, setIsSyncingAnaf] = useState(false);
 
   // --- PERSISTENCE ---
   useEffect(() => {
@@ -129,6 +202,73 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("price_alerts", JSON.stringify(alerts));
   }, [alerts]);
+
+  useEffect(() => {
+    localStorage.setItem("anaf_connected", String(anafConnected));
+    localStorage.setItem("anaf_company", anafCompany);
+    localStorage.setItem("anaf_cif", anafCif);
+    localStorage.setItem("anaf_expires_at", anafExpiresAt);
+  }, [anafConnected, anafCompany, anafCif, anafExpiresAt]);
+
+  useEffect(() => {
+    // 1. Handle postMessage from popups (if window.opener is working)
+    const handleMessage = (event: MessageEvent) => {
+      const origin = event.origin;
+      if (!origin.endsWith(".run.app") && !origin.includes("localhost") && !origin.includes("127.0.0.1")) {
+        return;
+      }
+      
+      if (event.data?.type === "OAUTH_AUTH_SUCCESS") {
+        setAnafConnected(true);
+        setAnafCompany(event.data.company || "Almada Invest SRL");
+        setAnafCif(event.data.cif || "RO39281920");
+        setAnafExpiresAt(event.data.expiresAt || "");
+        triggerToast("Contul ANAF SPV a fost conectat cu succes prin OAuth!", "success");
+      }
+    };
+    
+    // 2. Handle BroadcastChannel (extremely robust cross-window communication for same origin)
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('anaf_oauth_channel');
+      bc.onmessage = (event) => {
+        if (event.data?.type === "OAUTH_AUTH_SUCCESS") {
+          setAnafConnected(true);
+          setAnafCompany(event.data.company || "Almada Invest SRL");
+          setAnafCif(event.data.cif || "RO39281920");
+          setAnafExpiresAt(event.data.expiresAt || "");
+          triggerToast("Contul ANAF SPV a fost conectat cu succes prin OAuth!", "success");
+        }
+      };
+    } catch (e) {
+      console.error("BroadcastChannel not supported in this browser", e);
+    }
+
+    // 3. Handle localStorage change (if the popup directly writes to localStorage, other tabs of the same origin are notified instantly)
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === "anaf_connected" && event.newValue === "true") {
+        const company = localStorage.getItem("anaf_company") || "Almada Invest SRL";
+        const cif = localStorage.getItem("anaf_cif") || "RO39281920";
+        const expiresAt = localStorage.getItem("anaf_expires_at") || "";
+        setAnafConnected(true);
+        setAnafCompany(company);
+        setAnafCif(cif);
+        setAnafExpiresAt(expiresAt);
+        triggerToast("Contul ANAF SPV a fost conectat cu succes!", "success");
+      }
+    };
+    
+    window.addEventListener("message", handleMessage);
+    window.addEventListener("storage", handleStorageChange);
+    
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      window.removeEventListener("storage", handleStorageChange);
+      if (bc) {
+        bc.close();
+      }
+    };
+  }, []);
 
   // --- ACTIONS ---
 
@@ -155,6 +295,19 @@ export default function App() {
       return;
     }
 
+    const normalizedName = normalizeMaterialName(newRmName);
+    if (!normalizedName) {
+      triggerToast("Numele materiei prime nu poate fi gol.", "error");
+      return;
+    }
+
+    // Check if another material already has this normalized name to ensure uniqueness
+    const duplicate = rawMaterials.find(rm => rm.id !== editingRmId && normalizeMaterialName(rm.name) === normalizedName);
+    if (duplicate) {
+      triggerToast(`Materia primă "${normalizedName}" există deja în catalog (poziții unice)!`, "error");
+      return;
+    }
+
     if (editingRmId) {
       // Update existing
       setRawMaterials(prev =>
@@ -162,7 +315,7 @@ export default function App() {
           rm.id === editingRmId
             ? {
                 ...rm,
-                name: newRmName.trim(),
+                name: normalizedName,
                 unit: newRmUnit,
                 purchasePriceBeforeVat: priceNum,
                 vatPercent: vatNum,
@@ -171,20 +324,20 @@ export default function App() {
             : rm
         )
       );
-      triggerToast(`Materia primă "${newRmName}" a fost actualizată!`);
+      triggerToast(`Materia primă "${normalizedName}" a fost actualizată!`);
       setEditingRmId(null);
     } else {
       // Create new
       const newRm: RawMaterial = {
         id: `rm-${Date.now()}`,
-        name: newRmName.trim(),
+        name: normalizedName,
         unit: newRmUnit,
         purchasePriceBeforeVat: priceNum,
         vatPercent: vatNum,
         lastUpdated: new Date().toISOString()
       };
       setRawMaterials(prev => [...prev, newRm]);
-      triggerToast(`Materia primă "${newRmName}" a fost adăugată cu succes!`);
+      triggerToast(`Materia primă "${normalizedName}" a fost adăugată cu succes!`);
     }
 
     // Reset form
@@ -192,6 +345,7 @@ export default function App() {
     setNewRmPrice("");
     setNewRmUnit("kg");
     setNewRmVat("11");
+    setShowRawMaterialModal(false);
   };
 
   const handleEditRm = (rm: RawMaterial) => {
@@ -200,6 +354,7 @@ export default function App() {
     setNewRmUnit(rm.unit);
     setNewRmPrice(rm.purchasePriceBeforeVat.toString());
     setNewRmVat(rm.vatPercent.toString());
+    setShowRawMaterialModal(true);
   };
 
   const handleDeleteRm = (id: string, name: string) => {
@@ -210,11 +365,16 @@ export default function App() {
       return;
     }
 
-    if (confirm(`Sigur doriți să ștergeți materia primă "${name}"?`)) {
-      setRawMaterials(prev => prev.filter(rm => rm.id !== id));
-      setAlerts(prev => prev.filter(al => al.rawMaterialId !== id));
-      triggerToast(`Materia primă "${name}" a fost ștearsă.`);
-    }
+    setConfirmDialog({
+      isOpen: true,
+      title: "Ștergere Materie Primă",
+      message: `Sigur doriți să ștergeți materia primă "${name}"? Toate alertele de preț asociate vor fi de asemenea eliminate.`,
+      onConfirm: () => {
+        setRawMaterials(prev => prev.filter(rm => rm.id !== id));
+        setAlerts(prev => prev.filter(al => al.rawMaterialId !== id));
+        triggerToast(`Materia primă "${name}" a fost ștearsă.`);
+      }
+    });
   };
 
   // 2. Final Product management
@@ -297,7 +457,7 @@ export default function App() {
     setNewProdName("");
     setNewProdLogistics("0");
     setNewProdTaxes("0");
-    setNewProdMargin("30");
+    setNewProdMargin("20");
     setNewProdVat("11");
     setNewProdRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
   };
@@ -321,13 +481,18 @@ export default function App() {
       return;
     }
 
-    if (confirm(`Sigur doriți să ștergeți produsul "${name}"?`)) {
-      setProducts(prev => prev.filter(p => p.id !== id));
-      if (selectedProductId === id) {
-        setSelectedProductId(products.find(p => p.id !== id)?.id || "");
+    setConfirmDialog({
+      isOpen: true,
+      title: "Ștergere Produs",
+      message: `Sigur doriți să ștergeți produsul "${name}"? Această acțiune este permanentă.`,
+      onConfirm: () => {
+        setProducts(prev => prev.filter(p => p.id !== id));
+        if (selectedProductId === id) {
+          setSelectedProductId(products.find(p => p.id !== id)?.id || "");
+        }
+        triggerToast(`Produsul "${name}" a fost șters.`);
       }
-      triggerToast(`Produsul "${name}" a fost șters.`);
-    }
+    });
   };
 
   // 3. Sales Register
@@ -369,10 +534,15 @@ export default function App() {
   };
 
   const handleDeleteSale = (id: string) => {
-    if (confirm("Sigur doriți să ștergeți această vânzare înregistrată?")) {
-      setSales(prev => prev.filter(s => s.id !== id));
-      triggerToast("Înregistrarea vânzării a fost ștearsă.");
-    }
+    setConfirmDialog({
+      isOpen: true,
+      title: "Ștergere Vânzare",
+      message: "Sigur doriți să ștergeți această vânzare înregistrată? Această acțiune va schimba statisticile de profit.",
+      onConfirm: () => {
+        setSales(prev => prev.filter(s => s.id !== id));
+        triggerToast("Înregistrarea vânzării a fost ștearsă.");
+      }
+    });
   };
 
   // 4. Alert Management & Auto-recalculations
@@ -446,13 +616,105 @@ export default function App() {
         };
 
         setScannedInvoiceResult(scannedInv);
+        setUploadedInvoicesQueue(prev => {
+          if (prev.some(inv => inv.invoiceNumber === scannedInv.invoiceNumber && inv.supplierName === scannedInv.supplierName)) {
+            return prev;
+          }
+          return [...prev, scannedInv];
+        });
         triggerToast("Factura E-factura XML a fost procesată cu succes!");
-        runPriceComparisonEngine(scannedInv);
+        runIntelligentInvoiceMapping(scannedInv);
       } catch (err: any) {
         triggerToast(err.message || "Eroare la procesarea fișierului XML", "error");
       }
     };
     reader.readAsText(file);
+  };
+
+  // --- ZIP ARCHIVES UPLOADER FOR MULTIPLE XMLs ---
+  const handleZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsScanning(true);
+    setScanStatusLog(["Se inițializează cititorul ZIP...", "Se dezarhivează fișierele selectate..."]);
+
+    const newInvoices: ScannedInvoice[] = [];
+    const errors: string[] = [];
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setScanStatusLog(prev => [...prev, `Se procesează arhiva: ${file.name}...`]);
+
+        if (file.name.toLowerCase().endsWith(".zip")) {
+          const zip = new JSZip();
+          const loadedZip = await zip.loadAsync(file);
+          
+          const xmlEntries: { name: string; zipEntry: any }[] = [];
+          loadedZip.forEach((relativePath, zipEntry) => {
+            if (zipEntry.name.toLowerCase().endsWith(".xml") && !zipEntry.dir) {
+              xmlEntries.push({ name: zipEntry.name, zipEntry });
+            }
+          });
+
+          if (xmlEntries.length === 0) {
+            errors.push(`Fișierul ZIP "${file.name}" nu conține facturi .xml valide.`);
+            continue;
+          }
+
+          setScanStatusLog(prev => [...prev, `S-au găsit ${xmlEntries.length} fișiere XML în "${file.name}". Se dezarhivează...`]);
+
+          for (const entry of xmlEntries) {
+            try {
+              const xmlContent = await entry.zipEntry.async("string");
+              const parsed = parseEFacturaXML(xmlContent);
+              newInvoices.push({
+                id: `inv-zip-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                supplierName: parsed.supplierName,
+                invoiceNumber: parsed.invoiceNumber,
+                invoiceDate: parsed.invoiceDate,
+                items: parsed.items,
+                status: "pending"
+              });
+            } catch (xmlErr: any) {
+              errors.push(`Articolul "${entry.name}" din "${file.name}" nu a putut fi parsat: ${xmlErr.message}`);
+            }
+          }
+        } else {
+          errors.push(`Fișierul "${file.name}" nu are extensia .zip.`);
+        }
+      }
+    } catch (zipErr: any) {
+      errors.push(`Eroare generală la procesarea arhivei ZIP: ${zipErr.message}`);
+    } finally {
+      setIsScanning(false);
+      setScanStatusLog([]);
+    }
+
+    if (errors.length > 0) {
+      triggerToast(`Unele erori au apărut la procesare: ${errors.slice(0, 3).join(" | ")}`, "error");
+    }
+
+    if (newInvoices.length > 0) {
+      triggerToast(`S-au importat cu succes ${newInvoices.length} facturi XML din arhivele ZIP!`, "success");
+      
+      setUploadedInvoicesQueue(prev => {
+        const filteredNew = newInvoices.filter(
+          newInv => !prev.some(p => p.invoiceNumber === newInv.invoiceNumber && p.supplierName === newInv.supplierName)
+        );
+        const combined = [...prev, ...filteredNew];
+        
+        if (!scannedInvoiceResult && combined.length > 0) {
+          const firstPending = combined.find(c => c.status === "pending") || combined[0];
+          setScannedInvoiceResult(firstPending);
+          runIntelligentInvoiceMapping(firstPending);
+        }
+        return combined;
+      });
+    } else if (errors.length === 0) {
+      triggerToast("Nu s-au găsit facturi XML valide în arhivele ZIP încărcate.", "info");
+    }
   };
 
   const handlePasteXmlSubmit = () => {
@@ -471,10 +733,16 @@ export default function App() {
         status: "pending"
       };
       setScannedInvoiceResult(scannedInv);
+      setUploadedInvoicesQueue(prev => {
+        if (prev.some(inv => inv.invoiceNumber === scannedInv.invoiceNumber && inv.supplierName === scannedInv.supplierName)) {
+          return prev;
+        }
+        return [...prev, scannedInv];
+      });
       setShowXmlInput(false);
       setXmlInputText("");
       triggerToast("Factura XML din text a fost procesată!");
-      runPriceComparisonEngine(scannedInv);
+      runIntelligentInvoiceMapping(scannedInv);
     } catch (err: any) {
       triggerToast(err.message || "Eroare la procesarea textului XML", "error");
     }
@@ -520,12 +788,18 @@ export default function App() {
         };
 
         setScannedInvoiceResult(scannedInv);
-        setScanStatusLog(prev => [...prev, "Procesare AI finalizată!", "Verificare prețuri în curs..."]);
+        setUploadedInvoicesQueue(prev => {
+          if (prev.some(inv => inv.invoiceNumber === scannedInv.invoiceNumber && inv.supplierName === scannedInv.supplierName)) {
+            return prev;
+          }
+          return [...prev, scannedInv];
+        });
+        setScanStatusLog(prev => [...prev, "Procesare AI finalizată!", "Analiză semantizare ingrediente..."]);
         setTimeout(() => {
           setIsScanning(false);
           setScanStatusLog([]);
           triggerToast("Factura a fost scanată cu camera prin AI Gemini!");
-          runPriceComparisonEngine(scannedInv);
+          runIntelligentInvoiceMapping(scannedInv);
         }, 1000);
 
       } catch (err: any) {
@@ -542,6 +816,112 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  // --- ANAF SPV REAL OAUTH ACTIONS ---
+  const handleConnectAnaf = () => {
+    const width = 650;
+    const height = 750;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    
+    const popup = window.open(
+      "/api/auth/anaf/url",
+      "anaf_oauth",
+      `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`
+    );
+    
+    if (!popup) {
+      triggerToast("Popup-ul a fost blocat de browser. Te rugăm să activezi pop-up-urile pentru acest site.", "error");
+    }
+  };
+
+  const handleDisconnectAnaf = () => {
+    setAnafConnected(false);
+    setAnafCompany("");
+    setAnafCif("");
+    setAnafExpiresAt("");
+    triggerToast("Contul ANAF SPV a fost deconectat de la această aplicație.", "info");
+  };
+
+  const handleResetAllData = () => {
+    setShowResetConfirm(true);
+  };
+
+  const performResetAllData = () => {
+    // Clear localStorage explicitly to empty arrays
+    localStorage.setItem("raw_materials", JSON.stringify([]));
+    localStorage.setItem("final_products", JSON.stringify([]));
+    localStorage.setItem("sales_history", JSON.stringify([]));
+    localStorage.setItem("price_alerts", JSON.stringify([]));
+    
+    // Update state
+    setRawMaterials([]);
+    setProducts([]);
+    setSales([]);
+    setAlerts([]);
+    setSelectedProductId("");
+    
+    triggerToast("Aplicația a fost resetată complet! Toate datele au fost șterse.", "info");
+  };
+
+  const handleSyncAnaf = async () => {
+    if (!anafConnected) {
+      triggerToast("Conectați mai întâi contul dumneavoastră ANAF SPV prin OAuth.", "error");
+      return;
+    }
+    
+    setIsScanning(true);
+    setScanStatusLog([
+      `Conectare la ANAF API Gateway folosind token OAuth securizat...`,
+      `Interogare SPV e-Factura pentru CIF ${anafCif}...`,
+      `Se caută facturi transmise în ultimele 24 de ore...`
+    ]);
+
+    try {
+      const response = await fetch("/api/anaf/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cif: anafCif })
+      });
+
+      if (!response.ok) {
+        throw new Error("Conexiunea cu API ANAF a eșuat.");
+      }
+
+      const result = await response.json();
+      if (result.success && result.invoice) {
+        setScanStatusLog(prev => [
+          ...prev,
+          `Descărcare XML UBL oficial pentru factura ${result.invoice.invoiceNumber}...`,
+          `Verificare semnătură digitală minister...`,
+          `Factură nouă descărcată cu succes!`
+        ]);
+
+        setTimeout(() => {
+          const scannedInv: ScannedInvoice = {
+            id: `inv-spv-${Date.now()}`,
+            supplierName: result.invoice.supplierName,
+            invoiceNumber: result.invoice.invoiceNumber,
+            invoiceDate: result.invoice.invoiceDate,
+            items: result.invoice.items,
+            status: "pending"
+          };
+
+          setScannedInvoiceResult(scannedInv);
+          setIsScanning(false);
+          setScanStatusLog([]);
+          triggerToast(`Sincronizare Reușită! Factura ${scannedInv.invoiceNumber} de la ${scannedInv.supplierName} a fost descărcată.`, "success");
+          runIntelligentInvoiceMapping(scannedInv);
+        }, 1500);
+      } else {
+        throw new Error("Nu s-au găsit facturi noi în SPV.");
+      }
+    } catch (err: any) {
+      setIsScanning(false);
+      setScanStatusLog([]);
+      triggerToast(err.message || "Eroare la interogarea SPV ANAF", "error");
+    }
+  };
+
   // --- ANAF SPV SIMULATOR ---
   const handleSimulateSPV = (supplierIndex: number) => {
     setIsScanning(true);
@@ -552,32 +932,33 @@ export default function App() {
       "Factură nouă identificată!"
     ]);
 
-    // Simple mock invoices to demonstrate realistic price alerts!
+    // Realistic mock invoices for catering & cooked food suppliers (Fabrica de Platouri)
     const mocks = [
       {
-        supplierName: "Moara Tradițională Românească SRL",
-        invoiceNumber: "MR-9801",
+        supplierName: "Carmangeria Popescu SRL",
+        invoiceNumber: "CP-9810",
         invoiceDate: new Date().toISOString().split("T")[0],
         items: [
-          { name: "Făină superioară tip 000", quantity: 500, unitOfMeasure: "kg", unitPriceBeforeVat: 5.15, vatPercent: 9 }, // Increased from 4.50
-          { name: "Zahăr tos", quantity: 200, unitOfMeasure: "kg", unitPriceBeforeVat: 5.20, vatPercent: 9 } // Unchanged
+          { name: "PIEPT PUI CASEROLA DEZOSAT", quantity: 35, unitOfMeasure: "kg", unitPriceBeforeVat: 25.50, vatPercent: 9 }, // Increased from 22.50
+          { name: "CEAFA PORC FARA OS CASEROLA", quantity: 20, unitOfMeasure: "kg", unitPriceBeforeVat: 26.10, vatPercent: 9 } // Decreased from 27.00
         ]
       },
       {
-        supplierName: "Dinu Distrib Lactate SA",
-        invoiceNumber: "DDL-4412",
+        supplierName: "Metro Cash & Carry SRL",
+        invoiceNumber: "METRO-4412",
         invoiceDate: new Date().toISOString().split("T")[0],
         items: [
-          { name: "Unt românesc 82% grăsime", quantity: 60, unitOfMeasure: "kg", unitPriceBeforeVat: 46.50, vatPercent: 9 }, // Increased from 42.00
-          { name: "Lapte proaspăt 3.5% grăsime", quantity: 150, unitOfMeasure: "l", unitPriceBeforeVat: 6.10, vatPercent: 9 } // Decreased from 6.50
+          { name: "ROSI PROASPETE CAL. I", quantity: 40, unitOfMeasure: "kg", unitPriceBeforeVat: 8.20, vatPercent: 9 }, // Increased from 7.50
+          { name: "ULEI FLOAREA SOARELUI BUNI 1L", quantity: 60, unitOfMeasure: "l", unitPriceBeforeVat: 5.90, vatPercent: 9 }, // Decreased from 6.50
+          { name: "CASTRAVETI FABIO RO", quantity: 25, unitOfMeasure: "kg", unitPriceBeforeVat: 6.00, vatPercent: 9 } // Stable price
         ]
       },
       {
-        supplierName: "Ambalaje Eco Industrial SA",
-        invoiceNumber: "AEI-0029",
+        supplierName: "Ambalaje HoReCa Distrib SRL",
+        invoiceNumber: "AHD-0029",
         invoiceDate: new Date().toISOString().split("T")[0],
         items: [
-          { name: "Ambalaj cutie biodegradabilă premium", quantity: 1000, unitOfMeasure: "buc", unitPriceBeforeVat: 2.95, vatPercent: 19 } // Increased from 2.50
+          { name: "AMBALAJ PLATOU PLASTIC NEGRU 45CM", quantity: 200, unitOfMeasure: "buc", unitPriceBeforeVat: 3.90, vatPercent: 19 } // Increased from 3.50
         ]
       }
     ];
@@ -596,12 +977,221 @@ export default function App() {
         };
 
         setScannedInvoiceResult(scannedInv);
+        setUploadedInvoicesQueue(prev => {
+          if (prev.some(inv => inv.invoiceNumber === scannedInv.invoiceNumber && inv.supplierName === scannedInv.supplierName)) {
+            return prev;
+          }
+          return [...prev, scannedInv];
+        });
         setIsScanning(false);
         setScanStatusLog([]);
         triggerToast(`Factura ${selectedMock.invoiceNumber} a fost descărcată din SPV ANAF!`);
-        runPriceComparisonEngine(scannedInv);
+        runIntelligentInvoiceMapping(scannedInv);
       }, 1500);
     }, 1500);
+  };
+
+  // --- INTELLIGENT AI MAPPING ENGINE ---
+  const runIntelligentInvoiceMapping = async (invoice: ScannedInvoice) => {
+    setIsMappingInvoice(true);
+    setInvoiceMappings(null);
+    try {
+      const response = await fetch("/api/gemini/map-invoice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: invoice.items,
+          existingMaterials: rawMaterials
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Cererea de mapare a eșuat");
+      }
+
+      const result = await response.json();
+      if (result.success && result.mapping) {
+        // Enriched mapping state
+        const enriched = result.mapping.map((mapItem: any) => {
+          const originalItem = invoice.items[mapItem.invoiceItemIndex];
+          return {
+            ...mapItem,
+            originalName: originalItem.name,
+            quantity: originalItem.quantity,
+            unitOfMeasure: originalItem.unitOfMeasure || mapItem.unit,
+            unitPriceBeforeVat: originalItem.unitPriceBeforeVat,
+            vatPercent: originalItem.vatPercent
+          };
+        });
+        setInvoiceMappings(enriched);
+        triggerToast("AI a realizat maparea inteligentă a ingredientelor din factură!", "success");
+      } else {
+        throw new Error("Structură de mapare invalidă");
+      }
+    } catch (err) {
+      console.error("Fallback mapping used due to:", err);
+      // Fallback to local regex/substring matching if offline or error occurs
+      const localHeuristicMapping = invoice.items.map((item, idx) => {
+        const matchingRm = rawMaterials.find(
+          rm =>
+            rm.name.toLowerCase().includes(item.name.toLowerCase()) ||
+            item.name.toLowerCase().includes(rm.name.toLowerCase())
+        );
+
+        return {
+          invoiceItemIndex: idx,
+          matchType: matchingRm ? "existing" : "new",
+          existingMaterialId: matchingRm ? matchingRm.id : null,
+          suggestedCleanName: matchingRm ? matchingRm.name : normalizeMaterialName(item.name.replace(/\d+/g, '').replace(/\b(kg|l|buc|ml|gr)\b/gi, '')),
+          unit: item.unitOfMeasure || "kg",
+          originalName: item.name,
+          quantity: item.quantity,
+          unitOfMeasure: item.unitOfMeasure || "kg",
+          unitPriceBeforeVat: item.unitPriceBeforeVat,
+          vatPercent: item.vatPercent
+        };
+      });
+      setInvoiceMappings(localHeuristicMapping);
+      triggerToast("S-a realizat maparea locală a ingredientelor (asistența AI indisponibilă).", "info");
+    } finally {
+      setIsMappingInvoice(false);
+    }
+  };
+
+  const handleApplyInvoiceMappings = (invoice: ScannedInvoice) => {
+    if (!invoiceMappings || invoiceMappings.length === 0) return;
+
+    let newRmCount = 0;
+    let updatedPriceCount = 0;
+    const newAlerts: PriceAlert[] = [];
+    
+    // We will build a new array of raw materials
+    let updatedRawMaterials = [...rawMaterials];
+
+    invoiceMappings.forEach((map) => {
+      const cleanName = normalizeMaterialName(map.suggestedCleanName);
+      
+      // Check if this material ALREADY exists under this exact normalized name in updatedRawMaterials
+      const existingRm = updatedRawMaterials.find(rm => normalizeMaterialName(rm.name) === cleanName);
+      
+      if (existingRm) {
+        // Already exists in catalog under this name. Treat as existing and update price to avoid duplicates!
+        const oldPrice = existingRm.purchasePriceBeforeVat;
+        const newPrice = map.unitPriceBeforeVat;
+
+        if (Math.abs(oldPrice - newPrice) > 0.01) {
+          const type = newPrice > oldPrice ? "price_increase" : "price_decrease";
+          const alert: PriceAlert = {
+            id: `alert-${Date.now()}-${existingRm.id}`,
+            type,
+            rawMaterialId: existingRm.id,
+            rawMaterialName: existingRm.name,
+            oldPrice,
+            newPrice,
+            invoiceNumber: invoice.invoiceNumber,
+            supplierName: invoice.supplierName,
+            date: invoice.invoiceDate,
+            resolved: false
+          };
+          newAlerts.push(alert);
+          updatedPriceCount++;
+        }
+
+        const index = updatedRawMaterials.findIndex(rm => rm.id === existingRm.id);
+        if (index !== -1) {
+          updatedRawMaterials[index] = {
+            ...existingRm,
+            name: cleanName, // standardized without diacritics
+            purchasePriceBeforeVat: newPrice,
+            vatPercent: map.vatPercent || existingRm.vatPercent,
+            lastUpdated: new Date().toISOString()
+          };
+        }
+      } else if (map.matchType === "new" || !map.existingMaterialId) {
+        // Create new raw material
+        const newRmId = `rm-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const newRm: RawMaterial = {
+          id: newRmId,
+          name: cleanName,
+          unit: map.unit || "kg",
+          purchasePriceBeforeVat: map.unitPriceBeforeVat,
+          vatPercent: map.vatPercent || 11,
+          lastUpdated: new Date().toISOString()
+        };
+        updatedRawMaterials.push(newRm);
+        newRmCount++;
+      } else {
+        // Update existing raw material
+        const index = updatedRawMaterials.findIndex(rm => rm.id === map.existingMaterialId);
+        if (index !== -1) {
+          const matchingRm = updatedRawMaterials[index];
+          const oldPrice = matchingRm.purchasePriceBeforeVat;
+          const newPrice = map.unitPriceBeforeVat;
+
+          if (Math.abs(oldPrice - newPrice) > 0.01) {
+            const type = newPrice > oldPrice ? "price_increase" : "price_decrease";
+            const alert: PriceAlert = {
+              id: `alert-${Date.now()}-${matchingRm.id}`,
+              type,
+              rawMaterialId: matchingRm.id,
+              rawMaterialName: matchingRm.name,
+              oldPrice,
+              newPrice,
+              invoiceNumber: invoice.invoiceNumber,
+              supplierName: invoice.supplierName,
+              date: invoice.invoiceDate,
+              resolved: false
+            };
+            newAlerts.push(alert);
+            updatedPriceCount++;
+          }
+
+          // In both cases, update current price to latest from SPV
+          updatedRawMaterials[index] = {
+            ...matchingRm,
+            name: cleanName, // standardized without diacritics
+            purchasePriceBeforeVat: newPrice,
+            vatPercent: map.vatPercent || matchingRm.vatPercent,
+            lastUpdated: new Date().toISOString()
+          };
+        }
+      }
+    });
+
+    // Save state
+    setRawMaterials(updatedRawMaterials);
+    if (newAlerts.length > 0) {
+      setAlerts(prev => [...newAlerts, ...prev]);
+    }
+
+    // Clear preview
+    setScannedInvoiceResult(null);
+    setInvoiceMappings(null);
+
+    // Mark invoice as applied in queue
+    setUploadedInvoicesQueue(prev => {
+      const updated = prev.map(inv => inv.id === invoice.id ? { ...inv, status: "applied" as const } : inv);
+      // Try to find the next pending invoice to map automatically
+      const nextPending = updated.find(inv => inv.status === "pending");
+      if (nextPending) {
+        setTimeout(() => {
+          setScannedInvoiceResult(nextPending);
+          runIntelligentInvoiceMapping(nextPending);
+        }, 1200);
+      }
+      return updated;
+    });
+
+    // Beautiful UI Toast
+    if (newRmCount > 0 && updatedPriceCount > 0) {
+      triggerToast(`Succes! S-au creat ${newRmCount} poziții noi și s-au actualizat ${updatedPriceCount} prețuri în catalog.`, "success");
+    } else if (newRmCount > 0) {
+      triggerToast(`Succes! S-au creat ${newRmCount} materii prime noi în catalog.`, "success");
+    } else if (updatedPriceCount > 0) {
+      triggerToast(`Succes! S-au actualizat ${updatedPriceCount} prețuri de achiziție în catalog.`, "success");
+    } else {
+      triggerToast("Sincronizare completă. Toate prețurile din factură coincid deja cu catalogul.", "success");
+    }
   };
 
   // --- AUTOMATIC PRICE ALERT ENGINE ---
@@ -708,6 +1298,19 @@ export default function App() {
   };
 
   const periodStats = calculatePeriodStats();
+
+  const sortedAndFilteredRawMaterials = [...rawMaterials]
+    .sort((a, b) => a.name.localeCompare(b.name, "ro"))
+    .filter(rm => {
+      const query = removeDiacritics(searchRmQuery).trim().toUpperCase();
+      if (query && !rm.name.includes(query)) {
+        return false;
+      }
+      if (selectedRmLetter !== "ALL") {
+        return rm.name.startsWith(selectedRmLetter);
+      }
+      return true;
+    });
 
   // Recharts Monthly Evolution Data
   const getMonthlyChartData = () => {
@@ -827,6 +1430,190 @@ export default function App() {
         </div>
       )}
 
+      {/* Confirmation Modal for Resetting App */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 no-print">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3 text-rose-600 mb-4">
+              <div className="w-10 h-10 bg-rose-50 rounded-xl flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">Resetare Completă Date</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-6 leading-relaxed">
+              Sigur dorești să resetezi complet aplicația <strong>4Friends Margin</strong>? <br />
+              Toate ingredientele (materiile prime), rețetele create, istoricul de vânzări și alertele de preț vor fi șterse definitiv. Această acțiune este ireversibilă!
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Anulează
+              </button>
+              <button
+                onClick={() => {
+                  setShowResetConfirm(false);
+                  performResetAllData();
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-rose-100 transition-all cursor-pointer"
+              >
+                Da, șterge tot definitiv
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Safe Reusable Confirmation Dialog */}
+      {confirmDialog.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 no-print">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3 text-amber-600 mb-4">
+              <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-amber-600" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-900">{confirmDialog.title}</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-6 leading-relaxed">
+              {confirmDialog.message}
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Anulează
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+                  confirmDialog.onConfirm();
+                }}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-amber-100 transition-all cursor-pointer"
+              >
+                Confirmă
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal adăugare Materie Primă */}
+      {showRawMaterialModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 no-print">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3 text-emerald-600">
+                <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center shrink-0">
+                  <Database className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    {editingRmId ? "Editează Materie Primă" : "Adaugă Materie Primă Nouă"}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">Aceasta va deveni disponibilă în lista de ingrediente pentru rețete.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRawMaterialModal(false);
+                  setEditingRmId(null);
+                  setNewRmName("");
+                  setNewRmPrice("");
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRawMaterial} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Denumire Ingredient / Materie Primă</label>
+                <input
+                  type="text"
+                  value={newRmName}
+                  onChange={(e) => setNewRmName(e.target.value)}
+                  placeholder="Ex: Făină superioară, Ouă, Unt 82%"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-medium focus:outline-indigo-600"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Unitate de Măsură (U.M.)</label>
+                  <select
+                    value={newRmUnit}
+                    onChange={(e) => setNewRmUnit(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-medium focus:outline-indigo-600"
+                  >
+                    <option value="kg">kg</option>
+                    <option value="l">litru (l)</option>
+                    <option value="buc">bucată (buc)</option>
+                    <option value="m">metru (m)</option>
+                    <option value="g">gram (g)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Procent TVA (%)</label>
+                  <select
+                    value={newRmVat}
+                    onChange={(e) => setNewRmVat(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs font-medium focus:outline-indigo-600"
+                  >
+                    <option value="11">TVA Alimente / Redus (11%)</option>
+                    <option value="21">TVA Standard / Non-alimente (21%)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">Preț de Achiziție (Fără TVA) per U.M.</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.0001"
+                    value={newRmPrice}
+                    onChange={(e) => setNewRmPrice(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 pr-12 text-xs font-mono text-right font-semibold text-slate-800 focus:outline-indigo-600"
+                    required
+                  />
+                  <div className="absolute right-3 top-2.5 text-xs text-slate-400 font-bold">RON</div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowRawMaterialModal(false);
+                    setEditingRmId(null);
+                    setNewRmName("");
+                    setNewRmPrice("");
+                  }}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                >
+                  Anulează
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-lg shadow-emerald-100 transition-all cursor-pointer flex items-center gap-1"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>{editingRmId ? "Actualizează Ingredient" : "Adaugă Ingredient"}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar Navigation */}
       <aside className="w-full md:w-64 bg-slate-900 text-slate-300 flex flex-col shrink-0 no-print border-r border-slate-800">
         <div className="p-6 border-b border-slate-800 shrink-0">
@@ -855,8 +1642,8 @@ export default function App() {
                 : "text-slate-400 hover:bg-slate-800/55 hover:text-white"
             }`}
           >
-            <Camera className="w-5 h-5 text-indigo-400" />
-            <span>Scanare OCR / SPV</span>
+            <Database className="w-5 h-5 text-indigo-400" />
+            <span>Materii Prime & SPV</span>
             {activeAlerts.length > 0 && (
               <span className="absolute right-3 top-3.5 bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full ring-2 ring-slate-900">
                 {activeAlerts.length}
@@ -877,11 +1664,36 @@ export default function App() {
         </nav>
         <div className="p-4 border-t border-slate-800 shrink-0 hidden md:block">
           <div className="bg-slate-800/50 p-4 rounded-xl">
-            <p className="text-xs uppercase tracking-widest text-slate-500 mb-2 font-bold">Status Conexiune</p>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-              <span className="text-xs text-slate-300 font-medium">SPV E-Factura Activ</span>
-            </div>
+            <p className="text-xs uppercase tracking-widest text-slate-500 mb-2 font-bold">Status Conexiune ANAF</p>
+            {anafConnected ? (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                  <span className="text-xs text-emerald-400 font-bold">SPV Conectat</span>
+                </div>
+                <p className="text-[10px] text-slate-300 truncate font-semibold mt-1" title={anafCompany}>{anafCompany}</p>
+                <p className="text-[9px] text-slate-400">CIF: {anafCif}</p>
+                <button
+                  onClick={handleDisconnectAnaf}
+                  className="mt-2 text-left text-[9px] text-rose-400 hover:text-rose-300 font-medium cursor-pointer"
+                >
+                  Deconectează cont
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 bg-slate-500 rounded-full"></span>
+                  <span className="text-xs text-slate-400 font-medium">SPV Deconectat</span>
+                </div>
+                <button 
+                  onClick={handleConnectAnaf}
+                  className="mt-2 w-full bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold py-1.5 px-2 rounded-lg transition-colors cursor-pointer text-center"
+                >
+                  Conectează OAuth
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -899,6 +1711,14 @@ export default function App() {
             </h2>
           </div>
           <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+            <button
+              onClick={handleResetAllData}
+              className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 hover:text-rose-800 border border-rose-200 hover:border-rose-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm shadow-rose-100/50 active:scale-95 active:text-rose-900 duration-150"
+              title="Resetează complet aplicația și șterge toate datele din catalog și vânzări"
+            >
+              <Trash2 className="w-3.5 h-3.5 animate-pulse" />
+              <span>Resetare Date (Aplicație Golită)</span>
+            </button>
             {activeTab === "reports" && (
               <>
                 <button
@@ -1068,26 +1888,43 @@ export default function App() {
             
             {/* Products side panel list (col-span-5) */}
             <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
-              <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="p-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h3 className="font-bold text-slate-900 text-sm">Produse Finale & Rețete</h3>
                   <p className="text-[11px] text-slate-500 font-medium">Selectați un produs pentru a-i vedea formula</p>
                 </div>
-                <button
-                  onClick={() => {
-                    setEditingProductId(null);
-                    setNewProdName("");
-                    setNewProdLogistics("0");
-                    setNewProdTaxes("0");
-                    setNewProdMargin("30");
-                    setNewProdVat("11");
-                    setNewProdRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
-                    setShowProductForm(true);
-                  }}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-indigo-200 transition-all cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Adaugă Produs
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingRmId(null);
+                      setNewRmName("");
+                      setNewRmPrice("");
+                      setNewRmUnit("kg");
+                      setNewRmVat("11");
+                      setShowRawMaterialModal(true);
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-emerald-200 transition-all cursor-pointer whitespace-nowrap active:scale-95 duration-100"
+                    title="Adaugă materie primă sau ingredient nou în catalog"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Materie Primă
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingProductId(null);
+                      setNewProdName("");
+                      setNewProdLogistics("0");
+                      setNewProdTaxes("0");
+                      setNewProdMargin("20");
+                      setNewProdVat("11");
+                      setNewProdRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
+                      setShowProductForm(true);
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-md shadow-indigo-200 transition-all cursor-pointer whitespace-nowrap active:scale-95 duration-100"
+                    title="Adaugă un produs final sau o rețetă nouă"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Produs
+                  </button>
+                </div>
               </div>
 
               {/* Product creator modal / inline form */}
@@ -1122,13 +1959,32 @@ export default function App() {
                     <div className="bg-white p-2.5 rounded-lg border border-slate-200/60">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-[10px] font-bold text-slate-700 uppercase">Ingrediente rețetă</span>
-                        <button
-                          type="button"
-                          onClick={handleAddRecipeRow}
-                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
-                        >
-                          <Plus className="w-3 h-3" /> Adaugă materie primă
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingRmId(null);
+                              setNewRmName("");
+                              setNewRmPrice("");
+                              setNewRmUnit("kg");
+                              setNewRmVat("11");
+                              setShowRawMaterialModal(true);
+                            }}
+                            className="text-[10px] font-bold text-emerald-600 hover:text-emerald-800 flex items-center gap-0.5"
+                            title="Creează o materie primă nouă în catalogul global"
+                          >
+                            <Plus className="w-3 h-3" /> Creează Ingredient Nou
+                          </button>
+                          <span className="text-slate-300 text-xs">|</span>
+                          <button
+                            type="button"
+                            onClick={handleAddRecipeRow}
+                            className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
+                            title="Adaugă un nou rând pentru ingredient în această rețetă"
+                          >
+                            <Plus className="w-3 h-3" /> Adaugă rând în rețetă
+                          </button>
+                        </div>
                       </div>
 
                       <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
@@ -1141,7 +1997,7 @@ export default function App() {
                               required
                             >
                               <option value="">Alege ingredient...</option>
-                              {rawMaterials.map((rm) => (
+                              {[...rawMaterials].sort((a, b) => a.name.localeCompare(b.name, "ro")).map((rm) => (
                                 <option key={rm.id} value={rm.id}>
                                   {rm.name} ({formatRON(rm.purchasePriceBeforeVat)}/{rm.unit})
                                 </option>
@@ -1219,11 +2075,8 @@ export default function App() {
                           onChange={(e) => setNewProdVat(e.target.value)}
                           className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-medium focus:outline-indigo-600"
                         >
-                          <option value="11">11% (Produse Alimentare)</option>
-                          <option value="21">21% (Zahăr, Alcool, Răcoritoare, Non-alimente)</option>
-                          <option value="19">19% (Standard/Ambalaje)</option>
-                          <option value="9">9% (Vechi Alimente)</option>
-                          <option value="0">0% (Scutit)</option>
+                          <option value="11">11% (Alimente / Platouri)</option>
+                          <option value="21">21% (Non-alimente / Altele)</option>
                         </select>
                       </div>
                     </div>
@@ -1617,10 +2470,7 @@ export default function App() {
                         className="w-full bg-white border border-slate-200 rounded-lg p-1.5 text-xs font-medium focus:outline-indigo-600"
                       >
                         <option value="11">11% (Alimente)</option>
-                        <option value="21">21% (Zahăr, Alcool, Răcoritoare, Non-alimente)</option>
-                        <option value="19">19% (Standard/Ambalaje)</option>
-                        <option value="9">9% (Vechi Alimente)</option>
-                        <option value="0">0% (Scutit)</option>
+                        <option value="21">21% (Non-alimente / Altele)</option>
                       </select>
                     </div>
                   </div>
@@ -1653,42 +2503,93 @@ export default function App() {
                 </form>
               </div>
 
+              {/* Quick Search & A-Z Index Panel */}
+              <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/40 space-y-2">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={searchRmQuery}
+                    onChange={(e) => setSearchRmQuery(e.target.value)}
+                    placeholder="Caută după denumire (ex: SALAM)..."
+                    className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-8 py-1.5 text-xs font-semibold focus:outline-indigo-600 uppercase"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  {searchRmQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchRmQuery("")}
+                      className="text-slate-400 hover:text-slate-600 absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold w-4 h-4 flex items-center justify-center rounded-full hover:bg-slate-100"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+                
+                {/* Alphabetical Quick Index Navigation */}
+                <div className="flex flex-wrap gap-1 items-center pt-1">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase mr-1">Litera:</span>
+                  {["ALL", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "R", "S", "T", "U", "V", "X", "Z"].map((letter) => {
+                    const isSelected = selectedRmLetter === letter;
+                    return (
+                      <button
+                        type="button"
+                        key={letter}
+                        onClick={() => setSelectedRmLetter(letter)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-indigo-600 text-white shadow-xs shadow-indigo-100 scale-105"
+                            : "bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-950"
+                        }`}
+                      >
+                        {letter}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Inventory Table List */}
               <div className="divide-y divide-slate-100 overflow-y-auto flex-1 max-h-[450px]">
-                {rawMaterials.map((rm) => (
-                  <div key={rm.id} className="p-3.5 hover:bg-slate-50 flex items-center justify-between group">
-                    <div className="min-w-0 pr-2">
-                      <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{rm.name}</h4>
-                      <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                        Actualizat la: {new Date(rm.lastUpdated).toLocaleDateString("ro-RO")} • TVA {rm.vatPercent}%
-                      </p>
-                    </div>
-                    <div className="text-right flex items-center gap-2">
-                      <div>
-                        <span className="block font-mono font-bold text-xs sm:text-sm text-slate-900">
-                          {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
-                        </span>
-                        <span className="block text-[9px] text-slate-400 font-semibold">
-                          {formatRON(rm.purchasePriceBeforeVat * (1 + rm.vatPercent / 100))} cu TVA
-                        </span>
-                      </div>
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                        <button
-                          onClick={() => handleEditRm(rm)}
-                          className="p-1 hover:bg-slate-100 rounded-md text-slate-600"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteRm(rm.id, rm.name)}
-                          className="p-1 hover:bg-slate-100 rounded-md text-rose-500"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
+                {sortedAndFilteredRawMaterials.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-xs font-semibold bg-white">
+                    Nu s-au găsit materii prime potrivite pentru selecția curentă.
                   </div>
-                ))}
+                ) : (
+                  sortedAndFilteredRawMaterials.map((rm) => (
+                    <div key={rm.id} className="p-3.5 hover:bg-slate-50 flex items-center justify-between group">
+                      <div className="min-w-0 pr-2">
+                        <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{rm.name}</h4>
+                        <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                          Actualizat la: {new Date(rm.lastUpdated).toLocaleDateString("ro-RO")} • TVA {rm.vatPercent}%
+                        </p>
+                      </div>
+                      <div className="text-right flex items-center gap-2">
+                        <div>
+                          <span className="block font-mono font-bold text-xs sm:text-sm text-slate-900">
+                            {formatRON(rm.purchasePriceBeforeVat)} / {rm.unit}
+                          </span>
+                          <span className="block text-[9px] text-slate-400 font-semibold">
+                            {formatRON(rm.purchasePriceBeforeVat * (1 + rm.vatPercent / 100))} cu TVA
+                          </span>
+                        </div>
+                        <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                          <button
+                            onClick={() => handleEditRm(rm)}
+                            className="p-1 hover:bg-slate-100 rounded-md text-slate-600"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRm(rm.id, rm.name)}
+                            className="p-1 hover:bg-slate-100 rounded-md text-rose-500"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
 
             </div>
@@ -1827,7 +2728,7 @@ export default function App() {
                 )}
 
                 {/* Layout Grid of Inputs */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   
                   {/* Camera scan card option */}
                   <div className="bg-slate-50/70 p-4 rounded-xl border border-dashed border-slate-200 hover:border-indigo-400 transition-all flex flex-col items-center justify-between text-center group">
@@ -1886,6 +2787,33 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* MULTIPLE ZIP ARCHIVES UPLOADER */}
+                  <div className="bg-slate-50/70 p-4 rounded-xl border border-dashed border-slate-200 hover:border-indigo-400 transition-all flex flex-col items-center justify-between text-center group">
+                    <div className="bg-indigo-50 text-indigo-600 p-3 rounded-2xl group-hover:scale-105 transition-all">
+                      <FileArchive className="w-6 h-6" />
+                    </div>
+                    <div className="mt-3">
+                      <h4 className="font-bold text-slate-900 text-xs sm:text-sm">Arhive Multiple .ZIP (ANAF)</h4>
+                      <p className="text-[11px] text-slate-500 leading-normal max-w-xs mx-auto mt-1">
+                        Selectați unul sau mai multe fișiere .ZIP cu facturi descărcate din ANAF. Extragere automată a tuturor XML-urilor.
+                      </p>
+                    </div>
+                    
+                    <div className="flex gap-2 mt-4 flex-wrap justify-center">
+                      <label className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl cursor-pointer shadow-md shadow-indigo-100 transition-all flex items-center gap-1.5">
+                        <Upload className="w-3.5 h-3.5" />
+                        Alege Arhive .ZIP
+                        <input
+                          type="file"
+                          accept=".zip"
+                          multiple
+                          onChange={handleZipUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
                 </div>
 
                 {/* Paste XML Inline Section */}
@@ -1916,10 +2844,104 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Simulator of ANAF SPV API - Highly appealing! */}
+                {/* ANAF SPV OAuth 2.0 Integration Panel */}
+                <div className="mt-6 border-t border-slate-100 pt-5">
+                  <div className="bg-slate-900 rounded-2xl p-5 text-white relative overflow-hidden shadow-lg border border-slate-800">
+                    <div className="absolute right-0 bottom-0 translate-y-1/3 translate-x-1/4 opacity-10">
+                      <Database className="w-48 h-48 text-indigo-500" />
+                    </div>
+                    
+                    <div className="relative z-10">
+                      <div className="flex items-center justify-between flex-wrap gap-2 mb-3.5">
+                        <div className="flex items-center gap-2">
+                          <span className="bg-indigo-950/60 text-yellow-300 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider border border-indigo-500/30">
+                            ANAF SPV OAuth 2.0
+                          </span>
+                          <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-emerald-500/20">
+                            API v1.0
+                          </span>
+                        </div>
+                        
+                        {anafConnected && (
+                          <div className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-800/40 font-semibold">
+                            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                            <span>Sincronizat activ</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <h4 className="font-bold text-sm sm:text-base text-white">
+                        Sincronizare Automată ANAF SPV (e-Factura)
+                      </h4>
+                      <p className="text-xs text-slate-400 mt-1.5 leading-relaxed max-w-xl">
+                        Conectați-vă contul SPV prin OAuth 2.0 securizat. Facturile primite de la furnizorii de materii prime vor fi preluate automat în timp real, direct în format XML UBL securizat, iar prețurile din rețete vor fi verificate instantaneu!
+                      </p>
+
+                      {/* Connection details block */}
+                      {anafConnected ? (
+                        <div className="mt-4 bg-slate-800/30 rounded-xl p-4 border border-slate-800 text-xs max-w-xl">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Firmă Conectată</span>
+                              <p className="font-bold text-slate-200">{anafCompany}</p>
+                              <p className="text-[10px] text-slate-400 font-mono">CIF: {anafCif}</p>
+                            </div>
+                            <div className="space-y-1">
+                              <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Token Valabilitate (OAuth)</span>
+                              <p className="font-semibold text-emerald-400">Activ (90 de zile)</p>
+                              <p className="text-[10px] text-slate-400">Expiră la: {anafExpiresAt}</p>
+                            </div>
+                          </div>
+                          
+                          <div className="mt-4 pt-3.5 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                            <button
+                              onClick={handleSyncAnaf}
+                              disabled={isScanning}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs py-2 px-4 rounded-xl shadow-md shadow-indigo-900 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+                              Sincronizează facturi SPV
+                            </button>
+                            <button
+                              onClick={handleDisconnectAnaf}
+                              className="text-[11px] text-rose-400 hover:text-rose-300 font-medium cursor-pointer"
+                            >
+                              Deconectează contul ANAF
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-4">
+                          <button
+                            onClick={handleConnectAnaf}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs py-2.5 px-5 rounded-xl shadow-md shadow-indigo-950 transition-all flex items-center gap-2 cursor-pointer"
+                          >
+                            <Database className="w-4 h-4 text-indigo-300" />
+                            Conectează contul ANAF SPV via OAuth
+                          </button>
+                          
+                          {/* Instructions block */}
+                          <div className="mt-4 bg-slate-950/40 rounded-xl p-3.5 border border-slate-800 text-[11px] text-slate-400 leading-relaxed max-w-xl">
+                            <p className="font-semibold text-slate-300 text-xs mb-1">📋 Ghid de configurare OAuth:</p>
+                            <ul className="list-disc pl-4 space-y-1 text-slate-400">
+                              <li>Dacă doriți doar testarea aplicației, lăsați setările implicite în portalul pop-up și conectați-vă în modul <strong>Sandbox</strong> pentru a descărca imediat facturi virtuale.</li>
+                              <li>Pentru producție reală, înregistrați aplicația în portalul ANAF OAuth API și adăugați variabila <code>ANAF_CLIENT_ID</code> în setările aplicației (.env).</li>
+                              <li>Adresă URL de callback autorizată în portalul ANAF:</li>
+                              <li className="list-none pt-1">
+                                <code className="bg-slate-950 p-1.5 rounded font-mono text-[10px] text-indigo-300 block select-all overflow-x-auto whitespace-nowrap">https://ais-dev-hxglmedpfxrn4g2l6wx5dj-549539269193.europe-west2.run.app/api/auth/anaf/callback</code>
+                              </li>
+                            </ul>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Simulated Supplier Invoices Quick Selector */}
                 <div className="mt-6 border-t border-slate-100 pt-5">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2.5">
-                    MOCK HUB: Simulare Conexiune SPV ANAF (Descărcare automată facturi)
+                    Instrumente de Testare: Simulare Livrări & Actualizări Prețuri Furnizori
                   </span>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <button
@@ -1927,8 +2949,8 @@ export default function App() {
                       className="bg-white border border-slate-200 hover:border-indigo-500 p-2.5 rounded-xl hover:bg-indigo-50/30 text-left transition-all group flex items-center justify-between cursor-pointer"
                     >
                       <div>
-                        <span className="block font-bold text-xs text-slate-800">Moara Românească</span>
-                        <span className="block text-[9px] text-slate-500">Factură făină (Crește la 5.15 RON)</span>
+                        <span className="block font-bold text-xs text-slate-800">Carmangeria Popescu</span>
+                        <span className="block text-[9px] text-slate-500">Piept pui & Ceafă (Scumpiri/Ieftiniri)</span>
                       </div>
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
                     </button>
@@ -1938,8 +2960,8 @@ export default function App() {
                       className="bg-white border border-slate-200 hover:border-indigo-500 p-2.5 rounded-xl hover:bg-indigo-50/30 text-left transition-all group flex items-center justify-between cursor-pointer"
                     >
                       <div>
-                        <span className="block font-bold text-xs text-slate-800">Dinu Distrib Lactate</span>
-                        <span className="block text-[9px] text-slate-500">Factură unt/lapte (Modificari)</span>
+                        <span className="block font-bold text-xs text-slate-800">Metro Cash & Carry</span>
+                        <span className="block text-[9px] text-slate-500">Legume, Ulei, Castraveți (Import)</span>
                       </div>
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
                     </button>
@@ -1949,8 +2971,8 @@ export default function App() {
                       className="bg-white border border-slate-200 hover:border-indigo-500 p-2.5 rounded-xl hover:bg-indigo-50/30 text-left transition-all group flex items-center justify-between cursor-pointer"
                     >
                       <div>
-                        <span className="block font-bold text-xs text-slate-800">Ambalaje Eco Ind.</span>
-                        <span className="block text-[9px] text-slate-500">Factură cutii (Crește la 2.95 RON)</span>
+                        <span className="block font-bold text-xs text-slate-800">Ambalaje HoReCa Distrib</span>
+                        <span className="block text-[9px] text-slate-500">Platouri plastic (Crește la 3.90 RON)</span>
                       </div>
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
                     </button>
@@ -1959,63 +2981,278 @@ export default function App() {
 
               </div>
 
-              {/* Scanned invoice preview results */}
-              {scannedInvoiceResult && (
-                <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm animate-fade-in">
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-                    <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4 text-amber-500" />
-                      Rezultat Factură Încărcată (Mapează cu Catalog)
-                    </h3>
+              {/* Coada de Facturi Importate */}
+              {uploadedInvoicesQueue.length > 0 && (
+                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-xl border border-slate-800 mb-6 animate-fade-in">
+                  <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                      <FileArchive className="w-5 h-5 text-indigo-400" />
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-100">Coada de Facturi Importate ({uploadedInvoicesQueue.length})</h3>
+                        <p className="text-[10px] text-slate-400 font-medium">Puteți selecta factura pe care doriți să o asociați cu catalogul</p>
+                      </div>
+                    </div>
                     <button
-                      onClick={() => setScannedInvoiceResult(null)}
-                      className="text-xs text-slate-400 hover:text-slate-600"
+                      onClick={() => {
+                        setUploadedInvoicesQueue([]);
+                        setScannedInvoiceResult(null);
+                        setInvoiceMappings(null);
+                      }}
+                      className="text-[10px] bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 font-bold px-2.5 py-1.5 rounded-lg transition-all cursor-pointer"
+                    >
+                      Golește Coada
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-48 overflow-y-auto pr-1">
+                    {uploadedInvoicesQueue.map((invoice) => {
+                      const isActive = scannedInvoiceResult?.id === invoice.id;
+                      const isApplied = invoice.status === "applied";
+                      return (
+                        <button
+                          key={invoice.id}
+                          onClick={() => {
+                            if (isApplied) {
+                              triggerToast("Această factură a fost deja aplicată cu succes!", "info");
+                            }
+                            setScannedInvoiceResult(invoice);
+                            runIntelligentInvoiceMapping(invoice);
+                          }}
+                          className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between h-24 cursor-pointer ${
+                            isActive
+                              ? "bg-indigo-950/80 border-indigo-500 ring-2 ring-indigo-500/30 text-white"
+                              : isApplied
+                              ? "bg-emerald-950/40 border-emerald-900/60 text-slate-300 opacity-75 hover:opacity-100"
+                              : "bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-300"
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]" title={invoice.invoiceNumber}>
+                                {invoice.invoiceNumber}
+                              </span>
+                              <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded-full ${
+                                isApplied
+                                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                  : isActive
+                                  ? "bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 animate-pulse"
+                                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                              }`}>
+                                {isApplied ? "APLICATĂ" : isActive ? "MAPPING..." : "AȘTEPTARE"}
+                              </span>
+                            </div>
+                            <p className="font-bold text-xs truncate mt-1 text-slate-100" title={invoice.supplierName}>
+                              {invoice.supplierName}
+                            </p>
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2 border-t border-slate-800/50 pt-1.5">
+                            <span>{invoice.invoiceDate}</span>
+                            <span>{invoice.items.length} prod.</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Scanned invoice preview results & Intelligent AI Mapping */}
+              {scannedInvoiceResult && (
+                <div className="bg-white rounded-2xl border border-slate-100 p-6 shadow-sm animate-fade-in space-y-5">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <div>
+                      <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-1.5">
+                        <Sparkles className="w-4.5 h-4.5 text-indigo-500 animate-pulse" />
+                        Semantizare Factură SPV (Asistent AI Gemini)
+                      </h3>
+                      <p className="text-[11px] text-slate-500 font-medium">Mapare automată flexibilă și inteligentă a produselor achiziționate</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setScannedInvoiceResult(null);
+                        setInvoiceMappings(null);
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-600 font-bold bg-slate-50 hover:bg-slate-100 px-2.5 py-1.5 rounded-lg transition-all"
                     >
                       Ascunde
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs mb-4">
+                  {/* Factura Metadata Header */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-4 rounded-xl text-xs">
                     <div>
-                      <span className="block text-[9px] text-slate-400 uppercase font-bold">FURNIZOR</span>
-                      <strong className="text-slate-900">{scannedInvoiceResult.supplierName}</strong>
+                      <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">FURNIZOR</span>
+                      <strong className="text-slate-900 text-sm">{scannedInvoiceResult.supplierName}</strong>
                     </div>
                     <div>
-                      <span className="block text-[9px] text-slate-400 uppercase font-bold">NR. FACTURĂ</span>
-                      <strong className="text-slate-900 font-mono">{scannedInvoiceResult.invoiceNumber}</strong>
+                      <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">NR. FACTURĂ</span>
+                      <strong className="text-slate-900 text-sm font-mono">{scannedInvoiceResult.invoiceNumber}</strong>
                     </div>
                     <div>
-                      <span className="block text-[9px] text-slate-400 uppercase font-bold">DATĂ</span>
-                      <strong className="text-slate-900">{scannedInvoiceResult.invoiceDate}</strong>
+                      <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">DATĂ EMITERE</span>
+                      <strong className="text-slate-900 text-sm">{scannedInvoiceResult.invoiceDate}</strong>
                     </div>
                   </div>
 
-                  <div className="border border-slate-100 rounded-xl overflow-hidden text-xs">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="bg-slate-100/60 font-bold text-slate-600 border-b border-slate-100">
-                          <th className="p-2">Item în Factură</th>
-                          <th className="p-2 text-right">Cantitate</th>
-                          <th className="p-2 text-right">Preț Fără TVA</th>
-                          <th className="p-2 text-right">TVA (%)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-medium">
-                        {scannedInvoiceResult.items.map((item, index) => (
-                          <tr key={index} className="hover:bg-slate-50">
-                            <td className="p-2 font-bold text-slate-900">{item.name}</td>
-                            <td className="p-2 text-right font-mono text-slate-700">
-                              {item.quantity} {item.unitOfMeasure || "buc"}
-                            </td>
-                            <td className="p-2 text-right font-mono text-slate-900 font-bold">
-                              {formatRON(item.unitPriceBeforeVat)}
-                            </td>
-                            <td className="p-2 text-right font-mono text-slate-500">{item.vatPercent}%</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  {/* Mapping Loading State */}
+                  {isMappingInvoice && (
+                    <div className="bg-slate-50 border border-indigo-100 p-8 rounded-xl text-center space-y-3">
+                      <RefreshCw className="w-8 h-8 text-indigo-500 animate-spin mx-auto" />
+                      <p className="text-xs text-indigo-950 font-bold animate-pulse">Inteligenta Artificială Gemini asociază produsele...</p>
+                      <p className="text-[10px] text-slate-500 max-w-sm mx-auto">
+                        Se elimină abrevierile producătorului, se normalizează denumirile, se asociază semantizarea cu catalogul existent (ex: "piept dezosat" în "piept de pui") și se depistează diferențele de preț.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Mapping Display & Editor */}
+                  {!isMappingInvoice && invoiceMappings && (
+                    <div className="space-y-4">
+                      <div className="text-xs font-bold text-slate-700">Articole detectate în factură și propuneri de salvare:</div>
+                      
+                      <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl overflow-hidden bg-white">
+                        {invoiceMappings.map((map, index) => {
+                          const isNew = map.matchType === "new" || !map.existingMaterialId;
+                          const existingRm = isNew ? null : rawMaterials.find(rm => rm.id === map.existingMaterialId);
+                          
+                          // Calculate price diff
+                          let diffElement = null;
+                          if (existingRm) {
+                            const oldP = existingRm.purchasePriceBeforeVat;
+                            const newP = map.unitPriceBeforeVat;
+                            const diff = newP - oldP;
+                            if (Math.abs(diff) > 0.01) {
+                              const percent = ((diff / oldP) * 100).toFixed(1);
+                              if (diff > 0) {
+                                diffElement = (
+                                  <span className="text-[10px] bg-rose-50 text-rose-700 font-extrabold px-2 py-0.5 rounded-full border border-rose-100 animate-pulse">
+                                    ↑ Scumpire (+{percent}%)
+                                  </span>
+                                );
+                              } else {
+                                diffElement = (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-700 font-extrabold px-2 py-0.5 rounded-full border border-emerald-100">
+                                    ↓ Ieftinire ({percent}%)
+                                  </span>
+                                );
+                              }
+                            } else {
+                              diffElement = (
+                                <span className="text-[10px] bg-slate-50 text-slate-600 font-bold px-2 py-0.5 rounded-full border border-slate-100">
+                                  = Preț stabil
+                                </span>
+                              );
+                            }
+                          } else {
+                            diffElement = (
+                              <span className="text-[10px] bg-amber-50 text-amber-700 font-extrabold px-2 py-0.5 rounded-full border border-amber-100">
+                                + Materie Primă Nouă
+                              </span>
+                            );
+                          }
+
+                          return (
+                            <div key={index} className="p-4 hover:bg-slate-50/50 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              
+                              {/* Left side: Invoice item details */}
+                              <div className="space-y-1.5 max-w-sm">
+                                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Item pe Factură</div>
+                                <div className="font-bold text-slate-900 text-xs sm:text-sm leading-snug">{map.originalName}</div>
+                                <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+                                  <span>Cantitate:</span>
+                                  <span className="font-mono text-slate-800 font-bold">{map.quantity} {map.unitOfMeasure}</span>
+                                  <span className="text-slate-300">|</span>
+                                  <span>Preț achiziție:</span>
+                                  <span className="font-mono text-indigo-600 font-extrabold">{formatRON(map.unitPriceBeforeVat)}</span>
+                                </div>
+                              </div>
+
+                              {/* Center: Mapping selector & Input */}
+                              <div className="flex-1 max-w-md space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Mapare în Catalogul tău</span>
+                                  {diffElement}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {isNew ? (
+                                    <div className="flex-1">
+                                      <input
+                                        type="text"
+                                        value={map.suggestedCleanName}
+                                        onChange={(e) => {
+                                          const updated = [...invoiceMappings];
+                                          updated[index].suggestedCleanName = e.target.value;
+                                          setInvoiceMappings(updated);
+                                        }}
+                                        className="w-full bg-slate-50 hover:bg-slate-100 focus:bg-white border border-slate-200 focus:border-indigo-500 focus:outline-none rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 transition-all"
+                                        placeholder="Introduceți denumirea curată..."
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="flex-1 flex items-center justify-between bg-emerald-50/40 border border-emerald-100 rounded-lg px-2.5 py-1.5">
+                                      <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                                        {existingRm?.name}
+                                      </span>
+                                      <span className="text-[9px] text-slate-400 font-bold uppercase">Preț actual: {formatRON(existingRm?.purchasePriceBeforeVat || 0)}</span>
+                                    </div>
+                                  )}
+
+                                  {/* UOM Selector */}
+                                  <div className="w-20">
+                                    <select
+                                      value={map.unit || "kg"}
+                                      onChange={(e) => {
+                                        const updated = [...invoiceMappings];
+                                        updated[index].unit = e.target.value;
+                                        setInvoiceMappings(updated);
+                                      }}
+                                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 focus:outline-indigo-500 text-center"
+                                    >
+                                      <option value="kg">kg</option>
+                                      <option value="l">l</option>
+                                      <option value="buc">buc</option>
+                                      <option value="pachet">pac</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Map Confirmation Panel */}
+                      <div className="bg-slate-50/70 border border-slate-100 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                        <div className="text-xs text-slate-600 font-medium">
+                          <span className="font-extrabold text-indigo-950 block text-sm">Ești gata să aplici modificările?</span>
+                          Se vor adăuga automat produsele noi în catalog și se vor actualiza prețurile de achiziție, recalculând automat prețurile de producție recomandate.
+                        </div>
+                        <div className="flex gap-2 w-full sm:w-auto">
+                          <button
+                            onClick={() => {
+                              setScannedInvoiceResult(null);
+                              setInvoiceMappings(null);
+                              triggerToast("Importul facturii a fost anulat.", "info");
+                            }}
+                            className="flex-1 sm:flex-none border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-bold px-4 py-2.5 rounded-xl transition-all"
+                          >
+                            Resetează
+                          </button>
+                          <button
+                            onClick={() => handleApplyInvoiceMappings(scannedInvoiceResult)}
+                            className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-indigo-100 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            Aprobă și Actualizează Catalogul
+                          </button>
+                        </div>
+                      </div>
+
+                    </div>
+                  )}
 
                 </div>
               )}
