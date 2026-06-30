@@ -29,7 +29,8 @@ import {
   CheckSquare,
   Database,
   Search,
-  GitMerge
+  GitMerge,
+  Copy
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -47,7 +48,7 @@ import {
   Line
 } from "recharts";
 
-import { RawMaterial, FinalProduct, SaleRecord, PriceAlert, ScannedInvoice, ScannedInvoiceItem, SalePriceBreakdown } from "./types";
+import { RawMaterial, FinalProduct, SaleRecord, PriceAlert, ScannedInvoice, ScannedInvoiceItem, SalePriceBreakdown, SemiPrepared } from "./types";
 import { INITIAL_RAW_MATERIALS, INITIAL_PRODUCTS, INITIAL_SALES } from "./data";
 import { calculateSalePrice, formatRON, formatPercent, parseEFacturaXML, exportToCSV, normalizeMaterialName, removeDiacritics, getRecipeItemUnit, getRecipeItemFactor } from "./utils";
 
@@ -288,8 +289,18 @@ export default function App() {
     return saved ? JSON.parse(saved) || [] : [];
   });
 
+  const [semiPrepared, setSemiPrepared] = useState<SemiPrepared[]>(() => {
+    const saved = localStorage.getItem("semi_prepared");
+    if (saved === null) return [];
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return [];
+    }
+  });
+
   // UI state
-  const [activeTab, setActiveTab] = useState<"calculator" | "inventory" | "reports">("calculator");
+  const [activeTab, setActiveTab] = useState<"calculator" | "inventory" | "reports" | "semipreparate">("calculator");
   const [selectedProductId, setSelectedProductId] = useState<string>(() => {
     const saved = localStorage.getItem("final_products");
     if (saved === null) return INITIAL_PRODUCTS[0]?.id || "";
@@ -326,6 +337,18 @@ export default function App() {
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [newProdCalories, setNewProdCalories] = useState("");
   const [newProdAllergens, setNewProdAllergens] = useState("");
+  const [searchProductQuery, setSearchProductQuery] = useState("");
+
+  // Form states - Semipreparate
+  const [showSemiForm, setShowSemiForm] = useState(false);
+  const [newSemiName, setNewSemiName] = useState("");
+  const [newSemiUnit, setNewSemiUnit] = useState("kg");
+  const [newSemiYield, setNewSemiYield] = useState("1");
+  const [newSemiRecipe, setNewSemiRecipe] = useState<{ rawMaterialId: string; quantityNeeded: number }[]>([
+    { rawMaterialId: "", quantityNeeded: 0 }
+  ]);
+  const [editingSemiId, setEditingSemiId] = useState<string | null>(null);
+  const [searchSemiQuery, setSearchSemiQuery] = useState("");
 
   // PDF Recipe Parsing states
   const [isRecipeParsing, setIsRecipeParsing] = useState(false);
@@ -414,6 +437,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("final_products", JSON.stringify(products));
   }, [products]);
+
+  useEffect(() => {
+    localStorage.setItem("semi_prepared", JSON.stringify(semiPrepared));
+  }, [semiPrepared]);
 
   useEffect(() => {
     localStorage.setItem("sales_history", JSON.stringify(sales));
@@ -750,6 +777,17 @@ export default function App() {
       return;
     }
 
+    const normalizedNewName = removeDiacritics(newProdName).trim().toUpperCase();
+    const isDuplicateName = products.some(p => {
+      if (editingProductId && p.id === editingProductId) return false;
+      return removeDiacritics(p.name).trim().toUpperCase() === normalizedNewName;
+    });
+
+    if (isDuplicateName) {
+      triggerToast(`Există deja un produs cu numele "${newProdName.trim().toUpperCase()}". Vă rugăm să alegeți o denumire unică.`, "error");
+      return;
+    }
+
     // Filter out rows without raw material selected
     const validRecipe = newProdRecipe.filter(item => item.rawMaterialId !== "" && item.quantityNeeded > 0);
     if (validRecipe.length === 0) {
@@ -834,6 +872,27 @@ export default function App() {
     setShowProductForm(true);
   };
 
+  const handleCloneProduct = (prod: FinalProduct) => {
+    let baseName = `${prod.name} (COPIE)`;
+    let uniqueName = baseName;
+    let counter = 1;
+    while (products.some(p => removeDiacritics(p.name).trim().toUpperCase() === removeDiacritics(uniqueName).trim().toUpperCase())) {
+      uniqueName = `${baseName} ${counter}`;
+      counter++;
+    }
+
+    const clonedProduct: FinalProduct = {
+      ...prod,
+      id: `p-${Date.now()}`,
+      name: uniqueName.toUpperCase(),
+      recipeItems: prod.recipeItems.map(item => ({ ...item }))
+    };
+
+    setProducts(prev => [...prev, clonedProduct]);
+    setSelectedProductId(clonedProduct.id);
+    triggerToast(`Produsul "${prod.name}" a fost clonat cu numele "${clonedProduct.name}"!`);
+  };
+
   const handleDeleteProduct = (id: string, name: string) => {
     // Check if sales exist
     const hasSales = sales.some(s => s.productId === id);
@@ -856,6 +915,144 @@ export default function App() {
     });
   };
 
+  // --- SEMIPREPARATE HANDLERS ---
+  const handleAddOrEditSemiPrepared = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!newSemiName.trim()) {
+      triggerToast("Completați denumirea semipreparatului.", "error");
+      return;
+    }
+
+    const normalizedNewName = removeDiacritics(newSemiName).trim().toUpperCase();
+    const isDuplicateName = semiPrepared.some(s => {
+      if (editingSemiId && s.id === editingSemiId) return false;
+      return removeDiacritics(s.name).trim().toUpperCase() === normalizedNewName;
+    });
+
+    if (isDuplicateName) {
+      triggerToast(`Există deja un semipreparat cu numele "${newSemiName.trim().toUpperCase()}". Vă rugăm să alegeți o denumire unică.`, "error");
+      return;
+    }
+
+    const yieldQty = parseFloat(newSemiYield);
+    if (isNaN(yieldQty) || yieldQty <= 0) {
+      triggerToast("Cantitatea rezultată trebuie să fie un număr pozitiv.", "error");
+      return;
+    }
+
+    const validRecipe = newSemiRecipe.filter(item => item.rawMaterialId !== "" && item.quantityNeeded > 0);
+    if (validRecipe.length === 0) {
+      triggerToast("Vă rugăm să adăugați cel puțin un ingredient valid în rețetă.", "error");
+      return;
+    }
+
+    if (editingSemiId) {
+      setSemiPrepared(prev =>
+        prev.map(s =>
+          s.id === editingSemiId
+            ? {
+                ...s,
+                name: newSemiName.trim().toUpperCase(),
+                unit: newSemiUnit,
+                yieldQuantity: yieldQty,
+                recipeItems: validRecipe,
+                lastUpdated: new Date().toISOString()
+              }
+            : s
+        )
+      );
+      triggerToast(`Semipreparatul "${newSemiName}" a fost actualizat!`);
+    } else {
+      const newSemi: SemiPrepared = {
+        id: `sp-${Date.now()}`,
+        name: newSemiName.trim().toUpperCase(),
+        unit: newSemiUnit,
+        yieldQuantity: yieldQty,
+        recipeItems: validRecipe,
+        lastUpdated: new Date().toISOString()
+      };
+      setSemiPrepared(prev => [...prev, newSemi]);
+      triggerToast(`Semipreparatul "${newSemiName}" a fost creat cu succes!`);
+    }
+
+    setEditingSemiId(null);
+    setNewSemiName("");
+    setNewSemiUnit("kg");
+    setNewSemiYield("1");
+    setNewSemiRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
+    setShowSemiForm(false);
+  };
+
+  const handleEditSemiPrepared = (semi: SemiPrepared) => {
+    setEditingSemiId(semi.id);
+    setNewSemiName(semi.name);
+    setNewSemiUnit(semi.unit);
+    setNewSemiYield(semi.yieldQuantity.toString());
+    setNewSemiRecipe(semi.recipeItems.map(item => ({ ...item })));
+    setShowSemiForm(true);
+  };
+
+  const handleCloneSemiPrepared = (semi: SemiPrepared) => {
+    let baseName = `${semi.name} (COPIE)`;
+    let uniqueName = baseName;
+    let counter = 1;
+    while (semiPrepared.some(s => removeDiacritics(s.name).trim().toUpperCase() === removeDiacritics(uniqueName).trim().toUpperCase())) {
+      uniqueName = `${baseName} ${counter}`;
+      counter++;
+    }
+
+    const clonedSemi: SemiPrepared = {
+      ...semi,
+      id: `sp-${Date.now()}`,
+      name: uniqueName.toUpperCase(),
+      recipeItems: semi.recipeItems.map(item => ({ ...item })),
+      lastUpdated: new Date().toISOString()
+    };
+
+    setSemiPrepared(prev => [...prev, clonedSemi]);
+    triggerToast(`Semipreparatul "${semi.name}" a fost clonat cu numele "${clonedSemi.name}"!`);
+  };
+
+  const handleDeleteSemiPrepared = (id: string, name: string) => {
+    const isUsedInProducts = products.some(p => p.recipeItems.some(item => item.rawMaterialId === id));
+    const isUsedInSemis = semiPrepared.some(s => s.recipeItems.some(item => item.rawMaterialId === id));
+
+    if (isUsedInProducts || isUsedInSemis) {
+      triggerToast(`Semipreparatul "${name}" este folosit într-o altă rețetă activă și nu poate fi șters!`, "error");
+      return;
+    }
+
+    setConfirmDialog({
+      isOpen: true,
+      title: "Ștergere Semipreparat",
+      message: `Sigur doriți să ștergeți semipreparatul "${name}"? Această acțiune este permanentă.`,
+      onConfirm: () => {
+        setSemiPrepared(prev => prev.filter(s => s.id !== id));
+        triggerToast(`Semipreparatul "${name}" a fost șters.`);
+      }
+    });
+  };
+
+  const handleSemiRecipeRowChange = (index: number, field: "rawMaterialId" | "quantityNeeded", value: any) => {
+    const updated = [...newSemiRecipe];
+    if (field === "quantityNeeded") {
+      updated[index].quantityNeeded = parseFloat(value) || 0;
+    } else {
+      updated[index].rawMaterialId = value;
+    }
+    setNewSemiRecipe(updated);
+  };
+
+  const handleAddSemiRecipeRow = () => {
+    setNewSemiRecipe(prev => [...prev, { rawMaterialId: "", quantityNeeded: 0 }]);
+  };
+
+  const handleRemoveSemiRecipeRow = (index: number) => {
+    if (newSemiRecipe.length <= 1) return;
+    setNewSemiRecipe(prev => prev.filter((_, idx) => idx !== index));
+  };
+
   // 3. Sales Register
   const handleRegisterSale = (e: React.FormEvent) => {
     e.preventDefault();
@@ -871,7 +1068,7 @@ export default function App() {
       return;
     }
 
-    const breakdown = calculateSalePrice(currentProduct, rawMaterials);
+    const breakdown = calculateSalePrice(currentProduct, virtualRawMaterials);
     const salePriceBeforeVat = breakdown.salePriceBeforeVat;
     const salePriceWithVat = breakdown.finalSalePriceWithVat;
 
@@ -1869,6 +2066,60 @@ export default function App() {
     return duplicates;
   }, [rawMaterials, ignoredDuplicates]);
 
+  const virtualRawMaterials = React.useMemo(() => {
+    const pricesMap: Record<string, { price: number; unit: string }> = {};
+    rawMaterials.forEach(rm => {
+      pricesMap[rm.id] = { price: rm.purchasePriceBeforeVat, unit: rm.unit };
+    });
+
+    const semiPrices: Record<string, number> = {};
+    
+    for (let pass = 0; pass < 5; pass++) {
+      let changed = false;
+      semiPrepared.forEach(semi => {
+        let totalCost = 0;
+        semi.recipeItems.forEach(item => {
+          if (pricesMap[item.rawMaterialId]) {
+            const rmUnit = pricesMap[item.rawMaterialId].unit;
+            const factor = getRecipeItemFactor(rmUnit);
+            const itemPrice = pricesMap[item.rawMaterialId].price;
+            totalCost += (item.quantityNeeded / factor) * itemPrice;
+          } else if (semiPrices[item.rawMaterialId] !== undefined) {
+            const semiUnit = semiPrepared.find(s => s.id === item.rawMaterialId)?.unit || "kg";
+            const factor = getRecipeItemFactor(semiUnit);
+            const itemPrice = semiPrices[item.rawMaterialId];
+            totalCost += (item.quantityNeeded / factor) * itemPrice;
+          }
+        });
+        const yieldQty = semi.yieldQuantity || 1;
+        const computedUnitPrice = totalCost / yieldQty;
+        if (semiPrices[semi.id] !== computedUnitPrice) {
+          semiPrices[semi.id] = computedUnitPrice;
+          changed = true;
+        }
+      });
+      if (!changed) break;
+    }
+
+    const virtualList: RawMaterial[] = [...rawMaterials];
+
+    semiPrepared.forEach(semi => {
+      const price = semiPrices[semi.id] || 0;
+      virtualList.push({
+        id: semi.id,
+        name: `[SEMIPREPARAT] ${semi.name.trim().toUpperCase()}`,
+        unit: semi.unit,
+        purchasePriceBeforeVat: Number(price.toFixed(4)),
+        vatPercent: 0,
+        lastUpdated: semi.lastUpdated || new Date().toISOString(),
+        isSemiPrepared: true,
+        semiPreparedId: semi.id
+      });
+    });
+
+    return virtualList;
+  }, [rawMaterials, semiPrepared]);
+
   const normalizedSearchQuery = React.useMemo(() => {
     return removeDiacritics(searchRmQuery).trim().toUpperCase();
   }, [searchRmQuery]);
@@ -1890,6 +2141,38 @@ export default function App() {
         return true;
       });
   }, [rawMaterials, normalizedSearchQuery, selectedRmLetter]);
+
+  const normalizedProductSearchQuery = React.useMemo(() => {
+    return removeDiacritics(searchProductQuery).trim().toUpperCase();
+  }, [searchProductQuery]);
+
+  const sortedAndFilteredProducts = React.useMemo(() => {
+    return [...products]
+      .sort((a, b) => a.name.localeCompare(b.name, "ro"))
+      .filter(prod => {
+        if (normalizedProductSearchQuery) {
+          const normalizedProdName = removeDiacritics(prod.name).toUpperCase();
+          return normalizedProdName.includes(normalizedProductSearchQuery);
+        }
+        return true;
+      });
+  }, [products, normalizedProductSearchQuery]);
+
+  const normalizedSemiSearchQuery = React.useMemo(() => {
+    return removeDiacritics(searchSemiQuery).trim().toUpperCase();
+  }, [searchSemiQuery]);
+
+  const sortedAndFilteredSemiPrepared = React.useMemo(() => {
+    return [...semiPrepared]
+      .sort((a, b) => a.name.localeCompare(b.name, "ro"))
+      .filter(semi => {
+        if (normalizedSemiSearchQuery) {
+          const normalizedName = removeDiacritics(semi.name).toUpperCase();
+          return normalizedName.includes(normalizedSemiSearchQuery);
+        }
+        return true;
+      });
+  }, [semiPrepared, normalizedSemiSearchQuery]);
 
   // Recharts Monthly Evolution Data
   const getMonthlyChartData = () => {
@@ -1992,7 +2275,7 @@ export default function App() {
 
   // Active product price calculator
   const activeProduct = products.find(p => p.id === selectedProductId) || products[0];
-  const activeProductBreakdown = activeProduct ? calculateSalePrice(activeProduct, rawMaterials) : null;
+  const activeProductBreakdown = activeProduct ? calculateSalePrice(activeProduct, virtualRawMaterials) : null;
 
   const activeAlerts = alerts.filter(al => !al.resolved);
 
@@ -2753,6 +3036,17 @@ export default function App() {
             <TrendingUp className="w-5 h-5 text-indigo-400" />
             <span>Rapoarte Profit</span>
           </button>
+          <button
+            onClick={() => setActiveTab("semipreparate")}
+            className={`flex items-center gap-3 p-3 w-full text-left rounded-xl transition-colors whitespace-nowrap ${
+              activeTab === "semipreparate"
+                ? "bg-slate-800 text-white font-semibold shadow-sm"
+                : "text-slate-400 hover:bg-slate-800/55 hover:text-white"
+            }`}
+          >
+            <GitMerge className="w-5 h-5 text-indigo-400" />
+            <span>Semipreparate</span>
+          </button>
         </nav>
         <div className="p-4 border-t border-slate-800 shrink-0 hidden md:block">
           <div className="bg-slate-800/50 p-4 rounded-xl">
@@ -2800,17 +3094,10 @@ export default function App() {
               {activeTab === "calculator" && "Analiză Profitabilitate Rețete"}
               {activeTab === "inventory" && "Catalog Materii Prime & Monitorizare Furnizori"}
               {activeTab === "reports" && `Performanță Profitabilitate ${filterMonth === "All" ? "Totală" : filterMonth}`}
+              {activeTab === "semipreparate" && "Management Semipreparate & Sub-rețete în Casă"}
             </h2>
           </div>
           <div className="flex items-center gap-3 w-full md:w-auto justify-end">
-            <button
-              onClick={handleResetAllData}
-              className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-700 hover:text-rose-800 border border-rose-200 hover:border-rose-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm shadow-rose-100/50 active:scale-95 active:text-rose-900 duration-150"
-              title="Resetează complet aplicația și șterge toate datele din catalog și vânzări"
-            >
-              <Trash2 className="w-3.5 h-3.5 animate-pulse" />
-              <span>Resetare Date (Aplicație Golită)</span>
-            </button>
             {activeTab === "reports" && (
               <>
                 <button
@@ -3040,6 +3327,29 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Quick Search Panel for Products */}
+              <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/40">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={searchProductQuery}
+                    onChange={(e) => setSearchProductQuery(e.target.value)}
+                    placeholder="Caută produs final (ex: BURGER)..."
+                    className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-8 py-1.5 text-xs font-semibold focus:outline-indigo-600 uppercase"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  {searchProductQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchProductQuery("")}
+                      className="text-slate-400 hover:text-slate-600 absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold w-4 h-4 flex items-center justify-center rounded-full hover:bg-slate-100"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Product creator modal / inline form */}
               {showProductForm && (
                 <div className="p-4 bg-indigo-50/50 border-b border-indigo-100 animate-fade-in">
@@ -3102,7 +3412,7 @@ export default function App() {
 
                       <div className="space-y-3">
                         {newProdRecipe.map((recipeItem, index) => {
-                          const selectedRm = rawMaterials.find((rm) => rm.id === recipeItem.rawMaterialId);
+                          const selectedRm = virtualRawMaterials.find((rm) => rm.id === recipeItem.rawMaterialId);
                           const unitLabel = selectedRm ? getRecipeItemUnit(selectedRm.unit) : "";
                           
                           return (
@@ -3111,7 +3421,7 @@ export default function App() {
                                 <SearchableIngredientSelector
                                   value={recipeItem.rawMaterialId}
                                   onChange={(val) => handleRecipeRowChange(index, "rawMaterialId", val)}
-                                  rawMaterials={rawMaterials}
+                                  rawMaterials={virtualRawMaterials}
                                   placeholder="Alege ingredient..."
                                 />
                               </div>
@@ -3274,9 +3584,15 @@ export default function App() {
                     <p className="text-sm font-semibold text-slate-500">Nu aveți produse adăugate.</p>
                     <p className="text-xs text-slate-400">Adăugați rețeta unui produs final pentru a începe calculele.</p>
                   </div>
+                ) : sortedAndFilteredProducts.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Search className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                    <p className="text-sm font-semibold text-slate-500">Nu s-au găsit produse.</p>
+                    <p className="text-xs text-slate-400">Încercați o altă căutare sau ștergeți filtrul.</p>
+                  </div>
                 ) : (
-                  products.map((prod) => {
-                    const activeBreakdown = calculateSalePrice(prod, rawMaterials);
+                  sortedAndFilteredProducts.map((prod) => {
+                    const activeBreakdown = calculateSalePrice(prod, virtualRawMaterials);
                     const isSelected = selectedProductId === prod.id;
 
                     return (
@@ -3288,7 +3604,7 @@ export default function App() {
                         }`}
                       >
                         <div className="flex-1 min-w-0 pr-3">
-                          <h4 className="font-bold text-slate-900 text-xs sm:text-sm truncate">{prod.name}</h4>
+                          <h4 className="font-bold text-slate-900 text-xs sm:text-sm break-words whitespace-normal leading-snug">{prod.name}</h4>
                           <div className="flex items-center gap-3 mt-1 text-[11px] text-slate-500 font-medium">
                             <span>{prod.recipeItems.length} ingrediente</span>
                             <span>•</span>
@@ -3307,6 +3623,16 @@ export default function App() {
                           </div>
                           
                           <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCloneProduct(prod);
+                              }}
+                              className="p-1 hover:bg-slate-200 rounded-md text-indigo-600 cursor-pointer"
+                              title="Clonează rețetă (copiază)"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -3528,7 +3854,7 @@ export default function App() {
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {activeProduct.recipeItems.map((item, index) => {
-                            const rm = rawMaterials.find((r) => r.id === item.rawMaterialId);
+                            const rm = virtualRawMaterials.find((r) => r.id === item.rawMaterialId);
                             if (!rm) return null;
                             const factor = getRecipeItemFactor(rm.unit);
                             const totalCost = (item.quantityNeeded / factor) * rm.purchasePriceBeforeVat;
@@ -3919,7 +4245,7 @@ export default function App() {
                     <div key={rm.id} className="p-3.5 hover:bg-slate-50 flex items-center justify-between group">
                       <div className="min-w-0 pr-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <h4 className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{rm.name}</h4>
+                          <h4 className="font-semibold text-slate-900 text-xs sm:text-sm break-words whitespace-normal leading-snug">{rm.name}</h4>
                           {rm.isPackaged && (
                             <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide">
                               Pachet: {rm.packageSize} {rm.packageUnit}
@@ -4890,6 +5216,337 @@ export default function App() {
 
             </div>
 
+          </div>
+        )}
+
+        {activeTab === "semipreparate" && (
+          <div className="space-y-6">
+            {/* Intro Header */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Rețete de Semipreparate (Sub-rețete)</h3>
+                <p className="text-xs text-slate-500 max-w-2xl mt-1">
+                  Definiți rețete pentru ingredientele preparate în casă (ex: icre de crap preparate, sosuri, compoziții). 
+                  Odată create, le puteți adăuga în rețetele produselor finale exact ca pe niște materii prime. Prețul lor de cost se recalculează automat când se schimbă prețurile ingredientelor de bază!
+                </p>
+              </div>
+              {!showSemiForm && (
+                <button
+                  onClick={() => {
+                    setEditingSemiId(null);
+                    setNewSemiName("");
+                    setNewSemiUnit("kg");
+                    setNewSemiYield("1");
+                    setNewSemiRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
+                    setShowSemiForm(true);
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-lg shadow-indigo-100 flex items-center gap-1.5 transition-all duration-150 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Adaugă Semipreparat</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* List Section */}
+              <div className={`${showSemiForm ? "lg:col-span-7" : "lg:col-span-12"} bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col`}>
+                <div className="p-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-sm">Semipreparate Active</h4>
+                    <p className="text-[11px] text-slate-500 font-medium">Catalogul de sub-rețete preparate intern</p>
+                  </div>
+                  <div className="relative w-full sm:w-60">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5" />
+                    <input
+                      type="text"
+                      placeholder="Caută semipreparat..."
+                      value={searchSemiQuery}
+                      onChange={(e) => setSearchSemiQuery(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 placeholder-slate-400 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                    />
+                  </div>
+                </div>
+
+                <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto">
+                  {sortedAndFilteredSemiPrepared.length === 0 ? (
+                    <div className="p-12 text-center text-slate-400">
+                      <GitMerge className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+                      <p className="text-sm font-semibold">Niciun semipreparat găsit</p>
+                      <p className="text-xs mt-1">Creați un semipreparat nou folosind butonul de deasupra.</p>
+                    </div>
+                  ) : (
+                    sortedAndFilteredSemiPrepared.map((semi) => {
+                      // Calculate current live cost for this semipreparat
+                      let totalCost = 0;
+                      semi.recipeItems.forEach(item => {
+                        const rm = rawMaterials.find(r => r.id === item.rawMaterialId);
+                        if (rm) {
+                          const factor = getRecipeItemFactor(rm.unit);
+                          totalCost += (item.quantityNeeded / factor) * rm.purchasePriceBeforeVat;
+                        }
+                      });
+                      const unitCost = totalCost / (semi.yieldQuantity || 1);
+
+                      return (
+                        <div key={semi.id} className="p-4 hover:bg-slate-50/50 transition-all flex flex-col gap-3">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-bold px-2 py-0.5 rounded-md uppercase tracking-wider">
+                                  Sub-rețetă
+                                </span>
+                                <h4 className="font-bold text-slate-900 text-sm">{semi.name}</h4>
+                              </div>
+                              <p className="text-[11px] text-slate-500 font-medium mt-1">
+                                Randament rețetă: <strong className="text-slate-700">{semi.yieldQuantity} {semi.unit}</strong>
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <span className="block text-[10px] text-slate-500 font-semibold uppercase">Cost Unitar Recalculat</span>
+                              <strong className="text-sm font-mono text-indigo-700 font-bold">{formatRON(unitCost)} / {semi.unit}</strong>
+                              <span className="block text-[9px] text-slate-400 mt-0.5">Cost total lot: {formatRON(totalCost)}</span>
+                            </div>
+                          </div>
+
+                          {/* Ingredients table in list */}
+                          <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                            <h5 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Ingrediente rețetă:</h5>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                              {semi.recipeItems.map((item, idx) => {
+                                const rm = rawMaterials.find(r => r.id === item.rawMaterialId);
+                                if (!rm) return null;
+                                const factor = getRecipeItemFactor(rm.unit);
+                                const cost = (item.quantityNeeded / factor) * rm.purchasePriceBeforeVat;
+                                return (
+                                  <div key={idx} className="flex justify-between items-center text-slate-700">
+                                    <span className="font-medium truncate max-w-[150px]">{rm.name}</span>
+                                    <span className="font-mono text-[11px] text-slate-500">
+                                      {item.quantityNeeded} {getRecipeItemUnit(rm.unit)} ({formatRON(cost)})
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex justify-end items-center gap-2.5 pt-1 border-t border-slate-100/50">
+                            <button
+                              onClick={() => handleEditSemiPrepared(semi)}
+                              className="text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 p-1.5 rounded-lg transition-all text-xs font-bold flex items-center gap-1 cursor-pointer"
+                              title="Editează sub-rețetă"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                              <span>Editează</span>
+                            </button>
+                            <button
+                              onClick={() => handleCloneSemiPrepared(semi)}
+                              className="text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 p-1.5 rounded-lg transition-all text-xs font-bold flex items-center gap-1 cursor-pointer"
+                              title="Clonează rețetă"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Clonează</span>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSemiPrepared(semi.id, semi.name)}
+                              className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1.5 rounded-lg transition-all text-xs font-bold flex items-center gap-1 cursor-pointer"
+                              title="Șterge semipreparat"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Șterge</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Form Section */}
+              {showSemiForm && (
+                <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col">
+                  <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h4 className="font-bold text-slate-900 text-sm">
+                        {editingSemiId ? "Editează Semipreparat" : "Adaugă Semipreparat Nou"}
+                      </h4>
+                      <p className="text-[11px] text-slate-500">Completați datele rețetei</p>
+                    </div>
+                    <button
+                      onClick={() => setShowSemiForm(false)}
+                      className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleAddOrEditSemiPrepared} className="p-5 space-y-4 overflow-y-auto max-h-[600px]">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                        Denumire Semipreparat
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="de ex: ICRE DE CRAP PREPARATE"
+                        value={newSemiName}
+                        onChange={(e) => setNewSemiName(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
+                        required
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                          Unitate Rezultată
+                        </label>
+                        <select
+                          value={newSemiUnit}
+                          onChange={(e) => setNewSemiUnit(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-600"
+                        >
+                          <option value="kg">kg (kilogram)</option>
+                          <option value="l">l (litru)</option>
+                          <option value="buc">buc (bucată)</option>
+                          <option value="g">g (gram)</option>
+                          <option value="ml">ml (mililitru)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                          Cantitate Rezultată
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={newSemiYield}
+                          onChange={(e) => setNewSemiYield(e.target.value)}
+                          placeholder="de ex: 1"
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-600"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {/* Ingredient rows */}
+                    <div className="space-y-3 pt-2">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                          Ingrediente (Materii Prime)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleAddSemiRecipeRow}
+                          className="text-[10px] text-indigo-600 hover:text-indigo-800 font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Adaugă rând
+                        </button>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {newSemiRecipe.map((recipeItem, index) => {
+                          const selectedRm = rawMaterials.find((rm) => rm.id === recipeItem.rawMaterialId);
+                          const unitLabel = selectedRm ? getRecipeItemUnit(selectedRm.unit) : "";
+
+                          return (
+                            <div key={index} className="flex flex-col sm:flex-row sm:items-center gap-2 pb-2 sm:pb-0 border-b border-slate-100 sm:border-none">
+                              <div className="flex-1 min-w-0">
+                                <SearchableIngredientSelector
+                                  value={recipeItem.rawMaterialId}
+                                  onChange={(val) => handleSemiRecipeRowChange(index, "rawMaterialId", val)}
+                                  rawMaterials={rawMaterials}
+                                  placeholder="Alege ingredient..."
+                                />
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0 justify-end sm:justify-start">
+                                <div className="relative flex items-center shrink-0">
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={recipeItem.quantityNeeded || ""}
+                                    onChange={(e) => handleSemiRecipeRowChange(index, "quantityNeeded", e.target.value)}
+                                    placeholder="Cant."
+                                    className="w-24 bg-slate-50 border border-slate-200 rounded-md py-1.5 pl-2 pr-7 text-[11px] font-mono text-right focus:outline-indigo-600"
+                                    required
+                                  />
+                                  {unitLabel && (
+                                    <span className="absolute right-2 text-[10px] font-bold text-slate-400 font-mono pointer-events-none select-none">
+                                      {unitLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSemiRecipeRow(index)}
+                                  disabled={newSemiRecipe.length <= 1}
+                                  className="text-slate-400 hover:text-rose-600 disabled:opacity-30 disabled:pointer-events-none p-1.5 rounded hover:bg-slate-100 transition-colors cursor-pointer"
+                                  title="Șterge rând"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* LIVE COST PANEL inside form */}
+                    {(() => {
+                      let totalCost = 0;
+                      newSemiRecipe.forEach(item => {
+                        const rm = rawMaterials.find(r => r.id === item.rawMaterialId);
+                        if (rm) {
+                          const factor = getRecipeItemFactor(rm.unit);
+                          totalCost += (item.quantityNeeded / factor) * rm.purchasePriceBeforeVat;
+                        }
+                      });
+                      const yieldVal = parseFloat(newSemiYield) || 1;
+                      const unitCost = totalCost / yieldVal;
+
+                      return (
+                        <div className="bg-indigo-50/50 rounded-xl p-3.5 border border-indigo-100/70 space-y-1">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-600 font-medium">Cost Total Ingrediente:</span>
+                            <span className="font-bold font-mono text-slate-900">{formatRON(totalCost)}</span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs pt-1 border-t border-indigo-100/40">
+                            <span className="text-slate-600 font-bold">Cost per unitate ({newSemiUnit}):</span>
+                            <span className="font-bold font-mono text-sm text-indigo-700">{formatRON(unitCost)} / {newSemiUnit}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="pt-3 flex justify-end gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSemiId(null);
+                          setNewSemiName("");
+                          setNewSemiUnit("kg");
+                          setNewSemiYield("1");
+                          setNewSemiRecipe([{ rawMaterialId: "", quantityNeeded: 0 }]);
+                          setShowSemiForm(false);
+                        }}
+                        className="bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-bold px-4 py-2 rounded-xl transition-all duration-150 cursor-pointer"
+                      >
+                        Anulează
+                      </button>
+                      <button
+                        type="submit"
+                        className="bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-bold px-5 py-2 rounded-xl shadow-md shadow-indigo-100 transition-all duration-150 cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{editingSemiId ? "Salvează Modificări" : "Creează Rețetă"}</span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

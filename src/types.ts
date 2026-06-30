@@ -9,6 +9,8 @@ export interface RawMaterial {
   packagePrice?: number;
   packageSize?: number;
   packageUnit?: string;
+  isSemiPrepared?: boolean;
+  semiPreparedId?: string;
 }
 
 export interface RecipeItem {
@@ -84,4 +86,13 @@ export interface PriceAlert {
   supplierName: string;
   date: string;
   resolved: boolean;
+}
+
+export interface SemiPrepared {
+  id: string;
+  name: string;
+  unit: string; // kg, l, buc, g, etc.
+  yieldQuantity: number; // e.g. 1 (kg) or 1000 (g)
+  recipeItems: RecipeItem[]; // ingredients needed to produce yieldQuantity
+  lastUpdated: string; // ISO String
 }
